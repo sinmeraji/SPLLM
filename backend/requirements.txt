@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy>=2.0
+pydantic==2.*
+pydantic-settings
+APScheduler
+httpx
+python-dotenv
+PyYAML
+orjson

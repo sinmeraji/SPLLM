@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Node/Tauri
+node_modules/
+ui/tauri/src-tauri/target/
+ui/tauri/src-tauri/target/**
+ui/tauri/src-tauri/dist/
+
+# Data & logs
+/data/**
+!/data/.gitkeep
+/logs/**
+!/logs/.gitkeep
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

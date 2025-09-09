@@ -1,0 +1,8 @@
+Task: Given the time-gated briefs, price features, and current portfolio, output JSON with trade proposals.
+Schema: see configs/schemas/decision.schema.json. Do not include any other keys.
+Rules:
+- Only BUY if estimated upside ≥ 5% over the horizon and after costs.
+- Respect limits: ≤15 positions; ≤10% per ticker; ≥5% cash.
+- Stops/targets: include optional stop/take_profit as fractions (0.08, 0.12).
+- Quantity can be fractional to meet target sizing. Use USD sizing notes if helpful.
+- If no compelling opportunities, return empty proposals.

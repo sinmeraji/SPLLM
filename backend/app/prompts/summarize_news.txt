@@ -1,0 +1,4 @@
+Summarize the following time-gated news items for each ticker into a brief with:
+- sentiment (−1..1), catalysts, risks, and relevance.
+- scoring: novelty (0..1), reliability (0..1), impact (0..1; short-term).
+Return a compact bullet list per ticker (≤6 bullets).

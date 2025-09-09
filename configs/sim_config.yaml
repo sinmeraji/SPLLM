@@ -1,0 +1,59 @@
+# Simulation configuration (locked from brainstorming)
+run_window:
+  start_et: "2025-01-02"
+  end_et: "2025-02-03"
+  rth_only: true
+
+universe:
+  include_etfs: ["QQQ", "SPY", "XLK"]
+  index: "NASDAQ-100"
+  include_tech_adjacent: true
+
+risk:
+  long_only: true
+  max_positions: 15
+  max_position_pct: 0.10     # 10% per ticker
+  min_cash_pct: 0.05         # 5% cash buffer
+  stop_loss_pct: 0.08        # 8% stop
+  take_profit_pct: 0.12      # 12% target
+
+cadence:
+  decision_windows_et: ["10:00", "15:30"]
+  allow_event_window: true
+  max_event_windows_per_day: 1
+
+execution:
+  continuous_triggers: true   # stops/targets intraday
+  fill_rule: "minute_bar_midpoint"
+  slippage_bps: 2
+  commission_usd: 10
+  allow_fractional: true
+  min_order_usd: 1000
+  enforce_min_on_exits: false
+
+limits:
+  max_turnover_daily_pct: 0.30
+  max_orders_per_day: 10
+  cooldown_minutes_after_exit: 60
+
+llm:
+  provider: "openai"
+  daily_cap_usd: 10
+  monthly_cap_usd: 300
+  expected_return_gate_pct: 0.05
+  event_runs_per_day_max: 3
+  event_run_max_tickers: 5
+  window_top_k_tickers: 10
+
+prices:
+  primary_intraday: "alpaca"
+  fallback_bar: "5min"
+  primary_daily: "yahoo"
+
+news:
+  sources: ["gdelt", "edgar"]
+  time_gated: true
+  language: ["en"]
+
+initial_cash_usd: 100000
+
