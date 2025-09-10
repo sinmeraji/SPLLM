@@ -11,6 +11,8 @@ from ..core.db import get_db
 from ..services.rules import evaluate_order
 from ..services.sim import apply_order, ensure_initialized, get_cash
 from ..utils.events import bus
+from ..services.context import build_news_context
+from ..engine.llm import propose_trades, Proposal
 
 
 router = APIRouter()
@@ -55,6 +57,19 @@ async def decide_and_execute(payload: Dict[str, Any], db: Session = Depends(get_
         )
         if not rule.accepted:
             results.append({"ticker": t, "side": "BUY", "accepted": False, "reasons": rule.reasons})
+            # Emit decision event even when rejected so UI can reflect outcome
+            await bus.publish({
+                "type": "decision",
+                "ts": ts.isoformat(),
+                "ticker": t,
+                "side": "BUY",
+                "qty": 0.0,
+                "price": ref_price,
+                "accepted": False,
+                "reasons": rule.reasons,
+                "source": "decide",
+                "reason": "decide-mock",
+            })
             continue
         order = apply_order(
             db,
@@ -81,8 +96,93 @@ async def decide_and_execute(payload: Dict[str, Any], db: Session = Depends(get_
             "order_id": order.id,
             "source": "decide",
             "reason": "decide-mock",
+            "accepted": True,
         })
 
     return {"results": results, "cash": cash}
+
+@router.post('/decide/llm')
+async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """LLM-driven decision using cached news context.
+    payload: { tickers: [..], ts_et?: ISO, date?: YYYY-MM-DD }
+    """
+    ensure_initialized(db, settings.initial_cash_usd)
+    tickers: List[str] = [t.upper() for t in (payload.get('tickers') or [])]
+    if not tickers:
+        raise HTTPException(status_code=400, detail='tickers required')
+    ts_raw: Optional[str] = payload.get('ts_et')
+    ts = datetime.fromisoformat(ts_raw) if ts_raw else datetime.utcnow()
+    d_s: Optional[str] = payload.get('date')
+    day = ts.date() if not d_s else datetime.fromisoformat(d_s).date()
+
+    # Build context
+    ctx = {
+        "as_of": ts.isoformat(),
+        "tickers": tickers,
+        "portfolio_cash": get_cash(db),
+        "news": build_news_context(day, time(16, 0), tickers),
+    }
+    # Call LLM to get proposals
+    props: List[Proposal] = propose_trades(ctx)
+
+    results: List[Dict[str, Any]] = []
+    cash = get_cash(db)
+    day_orders_count = 0
+    for p in props:
+        ref_price = 100.0
+        rule = evaluate_order(
+            db,
+            now_et=ts,
+            ticker=p.ticker,
+            side=p.action,
+            quantity=p.quantity,
+            reference_price=ref_price,
+            cash=cash,
+            day_turnover_notional=0.0,
+            day_orders_count=day_orders_count,
+            last_exit_time_by_ticker={},
+        )
+        if not rule.accepted:
+            results.append({"ticker": p.ticker, "side": p.action, "accepted": False, "reasons": rule.reasons})
+            await bus.publish({
+                "type": "decision",
+                "ts": ts.isoformat(),
+                "ticker": p.ticker,
+                "side": p.action,
+                "qty": 0.0,
+                "price": ref_price,
+                "accepted": False,
+                "reasons": rule.reasons,
+                "source": "llm",
+                "reason": "llm-decision",
+            })
+            continue
+        order = apply_order(
+            db,
+            ts_et=ts,
+            ticker=p.ticker,
+            side=p.action,
+            quantity=rule.adjusted_quantity,
+            price=ref_price,
+            slippage_bps=settings.execution.slippage_bps,
+            commission_usd=settings.execution.commission_usd,
+            reason='llm',
+        )
+        day_orders_count += 1
+        cash = get_cash(db)
+        results.append({"ticker": p.ticker, "side": p.action, "accepted": True, "order_id": order.id})
+        await bus.publish({
+            "type": "trade",
+            "ts": ts.isoformat(),
+            "ticker": p.ticker,
+            "side": p.action,
+            "qty": rule.adjusted_quantity,
+            "price": ref_price,
+            "order_id": order.id,
+            "source": "llm",
+            "reason": "llm-decision",
+            "accepted": True,
+        })
+    return {"results": results, "cash": cash, "proposals": [getattr(p, '__dict__', dict()) for p in props]}
 
 

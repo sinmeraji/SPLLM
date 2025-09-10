@@ -46,7 +46,7 @@ def get_portfolio(db: Session = Depends(get_db)):
 
 
 @router.post("/orders/market")
-def place_market_order(
+async def place_market_order(
     payload: dict,
     db: Session = Depends(get_db),
 ):
@@ -71,20 +71,19 @@ def place_market_order(
         commission_usd=settings.execution.commission_usd,
         reason=payload.get("reason", "manual"),
     )
-    try:
-        asyncio.create_task(bus.publish({
-            "type": "trade",
-            "ts": ts.isoformat(),
-            "ticker": ticker,
-            "side": side,
-            "qty": quantity,
-            "price": price,
-            "order_id": order.id,
-            "source": payload.get("source", "manual"),
-            "reason": payload.get("reason", "manual"),
-        }))
-    except Exception:
-        pass
+    # Emit SSE synchronously to ensure delivery
+    await bus.publish({
+        "type": "trade",
+        "ts": ts.isoformat(),
+        "ticker": ticker,
+        "side": side,
+        "qty": quantity,
+        "price": price,
+        "order_id": order.id,
+        "source": payload.get("source", "manual"),
+        "reason": payload.get("reason", "manual"),
+        "accepted": True,
+    })
     return {"order_id": order.id}
 
 
