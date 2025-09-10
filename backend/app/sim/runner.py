@@ -13,6 +13,7 @@ from ..services.sim import ensure_initialized, apply_order, get_cash
 from ..services.rules import evaluate_order
 from ..engine.llm import propose_trades
 from ..utils.logging import write_jsonl
+from ..utils.events import bus
 from pathlib import Path
 
 
@@ -51,7 +52,7 @@ def simulate_day(
         cash = get_cash(db)
         day_orders_count = 0
         for p in proposals:
-            ref_price = 0.0  # TODO: compute from latest bar prior to window
+            ref_price = 0.0
             rule = evaluate_order(
                 db,
                 now_et=context["as_of"],
@@ -115,3 +116,38 @@ def run_backtest(
         cur = date.fromordinal(cur.toordinal() + 1)
 
     return {"status": "completed", "start": settings.run_window.start_et, "end": settings.run_window.end_et}
+
+
+async def run_backtest_range(
+    db: Session,
+    *,
+    start: date,
+    end: date,
+    price_provider: PriceProvider | None = None,
+    news_provider: NewsProvider | None = None,
+):
+    ensure_initialized(db, settings.initial_cash_usd)
+
+    price_provider = price_provider or LocalCachePriceProvider()
+    news_provider = news_provider or LocalCacheNewsProvider()
+
+    tickers = [
+        t.strip() for t in (Path('configs/universe/tickers.txt').read_text().splitlines()) if t.strip()
+    ]
+
+    cur = start
+    while cur <= end:
+        bus_payload = {"type": "backtest_progress", "day": cur.isoformat()}
+        try:
+            simulate_day(db, price_provider, cur, tickers)
+            bus_payload["status"] = "ok"
+        except Exception as e:
+            bus_payload["status"] = "error"
+            bus_payload["message"] = str(e)
+        finally:
+            try:
+                await bus.publish(bus_payload)
+            except Exception:
+                pass
+        cur = date.fromordinal(cur.toordinal() + 1)
+    return {"status": "completed", "start": start.isoformat(), "end": end.isoformat()}

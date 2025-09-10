@@ -1,0 +1,246 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SPLLM Mock UI</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  <style>
+    body { font-family: -apple-system, system-ui, Arial; margin: 16px; }
+    .row { display: flex; gap: 16px; }
+    .col { flex: 1; }
+    label { display:block; margin-top:8px; }
+    pre { background:#f6f6f6; padding:8px; }
+  </style>
+</head>
+<body>
+  <h1>SPLLM Mock UI</h1>
+  <div class="row">
+    <div class="col">
+      <h3>Universe</h3>
+      <select id="ticker"></select>
+      <label>Start <input type="date" id="start" /></label>
+      <label>End <input type="date" id="end" /></label>
+      <button id="load">Load</button>
+      <button id="decide">Decide (mock)</button>
+      <button id="runBacktest">Run Backtest</button>
+      <canvas id="chart" height="140"></canvas>
+      <div id="coverage" style="margin-top:8px;font:12px monospace;color:#555"></div>
+    </div>
+    <div class="col">
+      <h3>Portfolio</h3>
+      <button id="refresh">Refresh</button>
+      <pre id="portfolio"></pre>
+      <h3>Place Order (mock)</h3>
+      <label>Side
+        <select id="side"><option>BUY</option><option>SELL</option></select>
+      </label>
+      <label>Quantity <input id="qty" type="number" step="0.01" value="1"/></label>
+      <label>Ref Price <input id="price" type="number" step="0.01" value="100"/></label>
+      <button id="submit">Submit</button>
+      <pre id="orderResult"></pre>
+    </div>
+  </div>
+  <div class="row">
+    <div class="col"><h3>Events</h3><pre id="events"></pre></div>
+    <div class="col"><h3>Status</h3><pre id="status">Ready</pre></div>
+  </div>
+
+  <script>
+    // Basic diagnostics to surface errors in the UI
+    try { document.getElementById('status').textContent = 'UI loaded'; } catch {}
+    // Auto-clear events panel on load
+    try { document.getElementById('events').textContent = ''; } catch {}
+    window.addEventListener('error', (e)=>{
+      const el = document.getElementById('status');
+      if (el) el.textContent = `JS error: ${e.message || e}`;
+    });
+    window.addEventListener('unhandledrejection', (e)=>{
+      const el = document.getElementById('status');
+      if (el) el.textContent = `Promise error: ${e.reason && e.reason.message ? e.reason.message : e.reason}`;
+    });
+    const api = async (p, opts={})=> {
+  const { timeoutMs } = opts || {};
+  const ctrl = typeof AbortController !== 'undefined' && timeoutMs ? new AbortController() : null;
+  const t = timeoutMs && ctrl ? setTimeout(()=> ctrl.abort(), timeoutMs) : null;
+  const r = await fetch(p, { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined });
+  if (t) clearTimeout(t);
+  if (!r.ok) { throw new Error(await r.text()); }
+  return r.json();
+};
+
+    async function loadUniverse(){
+      const u = await api('/universe');
+      const sel = document.getElementById('ticker');
+      sel.innerHTML = '';
+      u.tickers.forEach(t=>{ const o=document.createElement('option'); o.text=t; o.value=t; sel.add(o); });
+      if(u.tickers.length){ sel.value=u.tickers[0]; }
+    }
+
+    let chart;
+    async function loadBars(){
+      const status = document.getElementById('status');
+      const t = document.getElementById('ticker').value;
+      const start = document.getElementById('start').value;
+      const end = document.getElementById('end').value;
+      const rangeLabel = (start && end) ? `${start}..${end}` : '';
+      if(!start || !end){ status.textContent = "Pick both Start and End dates"; return; }
+      status.textContent = `Loading ${t} ${rangeLabel}...`;
+      try {
+        const data = await api(`/prices/range/${t}?start=${start}&end=${end}`);
+        if (!data.bars || data.bars.length === 0){
+          if (chart) { chart.destroy(); chart = undefined; }
+          status.textContent = `No data for ${t} ${rangeLabel}`.trim();
+          return;
+        }
+        const raw = data.bars.map(b=> ({ x: new Date(b.ts), y: b.close }));
+        const startDate = new Date(start);
+        const endDate = new Date(end);
+        const diffMs = endDate - startDate;
+        const diffDays = Math.max(1, Math.round(diffMs / 86400000) + 1);
+
+        function chooseBucket(days){
+          if (days <= 1) return { bucketMs: 15*60*1000, unit: 'minute' }; // 15m
+          if (days <= 7) return { bucketMs: 60*60*1000, unit: 'hour' };   // 1h
+          if (days <= 30) return { bucketMs: 2*60*60*1000, unit: 'hour' }; // 2h
+          if (days <= 120) return { bucketMs: 24*60*60*1000, unit: 'day' }; // 1d
+          return { bucketMs: 24*60*60*1000, unit: 'day' }; // 1d for longer
+        }
+        const { bucketMs, unit } = chooseBucket(diffDays);
+
+        // Resample by bucket: use last close per bucket for a clean trend
+        const bucketToPoint = new Map();
+        for (const p of raw){
+          const key = Math.floor(p.x.getTime() / bucketMs) * bucketMs;
+          bucketToPoint.set(key, p); // overwrite keeps the last close in bucket
+        }
+        const points = Array.from(bucketToPoint.keys()).sort((a,b)=>a-b).map(k=>({ x: new Date(k), y: bucketToPoint.get(k).y }));
+        const ctx = document.getElementById('chart').getContext('2d');
+        if(chart) { chart.destroy(); }
+        chart = new Chart(ctx, {
+          type:'line',
+          data:{ datasets:[{ label: `${t} ${rangeLabel}`.trim(), data: points, borderColor:'#2b6', borderWidth:1.5, fill:false, pointRadius: 0, spanGaps: false, cubicInterpolationMode: 'monotone' }] },
+          options:{
+            animation:false,
+            plugins:{ decimation:{ enabled:true, algorithm:'lttb', samples: 1000 } },
+            scales:{
+              x:{ type:'time', time:{ unit, displayFormats:{ minute:'HH:mm', hour:'HH:mm', day:'MMM d' } }, ticks:{ maxRotation:0, autoSkip:true, maxTicksLimit: 12 } },
+              y:{ beginAtZero:false }
+            }
+          }
+        });
+        status.textContent = `Loaded ${t} ${rangeLabel} — bars: ${data.bars.length}`.trim();
+      } catch (e) {
+        status.textContent = `Error loading ${t} ${rangeLabel}: ${e}`.trim();
+      }
+    }
+
+    async function refreshPortfolio(){
+      const p = await api('/portfolio');
+      document.getElementById('portfolio').textContent = JSON.stringify(p, null, 2);
+    }
+
+    async function submitOrder(){
+      const ts = new Date().toISOString();
+      const ticker = document.getElementById('ticker').value;
+      const side = document.getElementById('side').value;
+      const quantity = parseFloat(document.getElementById('qty').value);
+      const price = parseFloat(document.getElementById('price').value);
+      const res = await fetch('/orders/market', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ts_et: ts, ticker, side, quantity, price, reason: 'mock-ui' })});
+      const j = await res.json();
+      document.getElementById('orderResult').textContent = JSON.stringify(j, null, 2);
+      await refreshPortfolio();
+    }
+
+        document.getElementById('refresh').onclick = refreshPortfolio;
+    document.getElementById('submit').onclick = submitOrder;
+    document.getElementById('load').onclick = async ()=>{ await loadBars(); };
+    document.getElementById('decide').onclick = async ()=>{
+      try{
+        const t = document.getElementById('ticker').value;
+        const ts = new Date().toISOString();
+        document.getElementById('status').textContent = `Buying 10 ${t}...`;
+        const r = await fetch('/orders/market', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ts_et: ts, ticker: t, side: 'BUY', quantity: 10, price: 100, reason: 'decide-mock', source: 'decide' })});
+        const j = await r.json();
+        document.getElementById('status').textContent = `Order: ${JSON.stringify(j)}`;
+        await refreshPortfolio();
+      } catch(e){ document.getElementById('status').textContent = `Decide error: ${e}`; }
+    };
+    document.getElementById('runBacktest').onclick = async ()=>{
+      try{
+        const start = document.getElementById('start').value;
+        const end = document.getElementById('end').value;
+        document.getElementById('status').textContent = `Starting backtest ${start}..${end}...`;
+        const r = await fetch('/backtest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ start, end })});
+        if(!r.ok){ throw new Error(await r.text()); }
+        document.getElementById('status').textContent = `Backtest started.`;
+      } catch(e){ document.getElementById('status').textContent = `Backtest error: ${e}`; }
+    };
+
+    
+    document.getElementById('ticker').onchange = async ()=>{
+      const t = document.getElementById('ticker').value;
+      document.getElementById('status').textContent = `Loading dates for ${t}...`;
+      const r = await api(`/prices/available-dates/${t}`);
+      const startEl = document.getElementById('start');
+      const endEl = document.getElementById('end');
+      if (r.dates && r.dates.length){
+        const dates = r.dates;
+        startEl.min = dates[0]; startEl.max = dates[dates.length-1];
+        endEl.min = dates[0]; endEl.max = dates[dates.length-1];
+        const n = Math.min(5, dates.length);
+        startEl.value = dates[dates.length - n];
+        endEl.value = dates[dates.length - 1];
+        renderCoverage(dates, startEl.value, endEl.value);
+      } else { renderCoverage([], '', ''); }
+      await loadBars();
+    };
+    document.getElementById('start').onchange = async ()=>{ await loadBars(); };
+    document.getElementById('end').onchange = async ()=>{ await loadBars(); };
+
+
+    loadUniverse().then(async ()=>{ document.getElementById('ticker').onchange(); }).then(refreshPortfolio);
+
+    const es = new EventSource('/events');
+    es.onmessage = (e)=>{
+      const pre = document.getElementById('events');
+      let suffix = '';
+      try {
+        let obj = JSON.parse(e.data);
+        if (obj && (obj.source || obj.reason)) {
+          const parts = [];
+          if (obj.source) parts.push(`source=${obj.source}`);
+          if (obj.reason) parts.push(`reason=${obj.reason}`);
+          suffix = ' ' + parts.join(' ');
+        }
+      } catch {
+        // try best-effort parse of python-dict
+        try {
+          const obj = JSON.parse(e.data.replace(/'/g, '"'));
+          if (obj && (obj.source || obj.reason)) {
+            const parts = [];
+            if (obj.source) parts.push(`source=${obj.source}`);
+            if (obj.reason) parts.push(`reason=${obj.reason}`);
+            suffix = ' ' + parts.join(' ');
+          }
+        } catch {}
+      }
+      pre.textContent += e.data + suffix + '\n';
+      pre.scrollTop = pre.scrollHeight;
+    };
+    
+    function renderCoverage(dates, start, end){
+      const el = document.getElementById('coverage');
+      if(!dates || dates.length===0){ el.textContent = "No cached dates for this ticker."; return; }
+      const beginIdx = Math.max(0, dates.indexOf(start));
+      const endIdx = Math.max(beginIdx, dates.indexOf(end));
+      const slice = dates.slice(beginIdx, endIdx+1);
+      const txt = slice.map(d=> "|").join("") + "|";
+      el.textContent = `Coverage ${start}..${end} (${slice.length} days): ${txt}`;
+    }
+
+    
+  </script>
+</body>
+</html>

@@ -11,6 +11,9 @@ from ..models.base import Base
 from ..models.portfolio import Position, KV
 from ..schemas.portfolio import PortfolioOut, PositionOut
 from ..services.sim import ensure_initialized, get_cash, apply_order
+from .decide import decide_and_execute as decide_fn
+import asyncio
+from ..utils.events import bus
 
 
 router = APIRouter()
@@ -48,7 +51,11 @@ def place_market_order(
     db: Session = Depends(get_db),
 ):
     # Simple market order ingestion for later extension
-    ts = datetime.fromisoformat(payload["ts_et"]) if "ts_et" in payload else datetime.utcnow()
+    ts_raw = payload.get("ts_et")
+    if ts_raw:
+        ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+    else:
+        ts = datetime.utcnow()
     ticker = payload["ticker"].upper()
     side = payload["side"].upper()
     quantity = float(payload["quantity"])    # assume post-slippage sizing later
@@ -64,4 +71,28 @@ def place_market_order(
         commission_usd=settings.execution.commission_usd,
         reason=payload.get("reason", "manual"),
     )
+    try:
+        asyncio.create_task(bus.publish({
+            "type": "trade",
+            "ts": ts.isoformat(),
+            "ticker": ticker,
+            "side": side,
+            "qty": quantity,
+            "price": price,
+            "order_id": order.id,
+            "source": payload.get("source", "manual"),
+            "reason": payload.get("reason", "manual"),
+        }))
+    except Exception:
+        pass
     return {"order_id": order.id}
+
+
+@router.post("/decide")
+async def decide_passthrough(payload: dict, db: Session = Depends(get_db)):
+    return await decide_fn(payload, db)
+
+
+@router.get("/decide-test")
+def decide_test() -> dict:
+    return {"status": "decide route container loaded"}
