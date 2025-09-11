@@ -1,3 +1,9 @@
+"""
+FastAPI application entrypoint.
+- Assembles routers (prices, news, features, decide, etc.) and mounts the static UI.
+- Configures CORS and SSE events; intended to run via uvicorn.
+Usage: uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+"""
 from __future__ import annotations
 
 from fastapi import FastAPI, Depends

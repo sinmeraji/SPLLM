@@ -1,3 +1,8 @@
+"""
+Service: prices ingestion.
+- Pulls minute/day bars from providers (Alpaca) and upserts into DB with idempotency.
+- Skips existing days; handles on-conflict updates safely for SQLite.
+"""
 from __future__ import annotations
 
 from datetime import date, datetime, time
@@ -9,6 +14,7 @@ import httpx
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from ..models.prices import PriceBar
 
@@ -109,33 +115,28 @@ def _ingest_alpaca(db: Session, *, ticker: str, d: date, timeframe: str) -> int:
             data = r.json()
             bars = data.get('bars') or []
             rows = 0
+            tf_key = 'min' if tf == '1Min' else 'day'
             for b in bars:
-                # Alpaca returns ISO8601 with Z
                 ts = datetime.fromisoformat(b['t'].replace('Z', '+00:00')).astimezone(None).replace(tzinfo=None)
-                existing = db.query(PriceBar).filter(
-                    PriceBar.ticker == ticker.upper(),
-                    PriceBar.ts == ts,
-                    PriceBar.timeframe == ('min' if tf == '1Min' else 'day'),
-                ).one_or_none()
-                if existing:
-                    existing.open = float(b['o'])
-                    existing.high = float(b['h'])
-                    existing.low = float(b['l'])
-                    existing.close = float(b['c'])
-                    existing.volume = float(b.get('v', 0) or 0)
-                else:
-                    db.add(PriceBar(
-                        ticker=ticker.upper(),
-                        ts=ts,
-                        timeframe=('min' if tf == '1Min' else 'day'),
-                        open=float(b['o']),
-                        high=float(b['h']),
-                        low=float(b['l']),
-                        close=float(b['c']),
-                        volume=float(b.get('v', 0) or 0),
-                    ))
+                stmt = sqlite_insert(PriceBar).values(
+                    ticker=ticker.upper(), ts=ts, timeframe=tf_key,
+                    open=float(b['o']), high=float(b['h']), low=float(b['l']), close=float(b['c']),
+                    volume=float(b.get('v', 0) or 0)
+                )
+                upsert = stmt.on_conflict_do_update(
+                    index_elements=['ticker', 'ts', 'timeframe'],
+                    set_={
+                        'open': stmt.excluded.open,
+                        'high': stmt.excluded.high,
+                        'low': stmt.excluded.low,
+                        'close': stmt.excluded.close,
+                        'volume': stmt.excluded.volume,
+                    }
+                )
+                db.execute(upsert)
                 rows += 1
             db.commit()
             return rows
     except Exception:
+        db.rollback()
         return 0

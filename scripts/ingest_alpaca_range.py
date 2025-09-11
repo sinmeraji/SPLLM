@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+# Script: DB-based Alpaca range ingestion
+# - Ingests minute bars into SQLite DB for given tickers and date range (env)
+# Usage: TICKERS=AAPL,MSFT START_DATE=YYYY-MM-DD END_DATE=YYYY-MM-DD python scripts/ingest_alpaca_range.py
 from __future__ import annotations
 
 import os

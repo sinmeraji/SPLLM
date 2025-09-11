@@ -1,3 +1,8 @@
+"""
+API: prices and universe endpoints.
+- Reads minute bars from DB (no CSV fallback) and exposes day/range queries.
+- Ingestion endpoint pulls from Alpaca and writes to DB.
+"""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
@@ -6,6 +11,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from ..core.db import get_db
 from ..services.prices_ingest import ingest_csv_bars
@@ -61,12 +67,14 @@ def get_prices(ticker: str, iso_date: str, db: Session = Depends(get_db)) -> dic
 def get_available_dates(ticker: str, db: Session = Depends(get_db)) -> dict:
     # Distinct dates present in minute bars
     rows = db.execute(
-        """
-        SELECT DISTINCT DATE(ts) as d
-        FROM price_bars
-        WHERE ticker = :ticker AND timeframe = 'min'
-        ORDER BY d
-        """,
+        text(
+            """
+            SELECT DISTINCT DATE(ts) as d
+            FROM price_bars
+            WHERE ticker = :ticker AND timeframe = 'min'
+            ORDER BY d
+            """
+        ),
         {"ticker": ticker.upper()},
     ).fetchall()
     dates = [str(r[0]) for r in rows]

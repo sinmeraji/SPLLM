@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+# Script: indicators backfill (daily 2y + intraday 90d)
+# - Computes and upserts daily and intraday indicators for tickers.
+# Usage: TICKERS=AAPL,MSFT START_DATE=YYYY-MM-DD END_DATE=YYYY-MM-DD python scripts/backfill_indicators.py
 from __future__ import annotations
 
 import os
