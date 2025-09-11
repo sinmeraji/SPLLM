@@ -12,6 +12,7 @@ from .api.equity import router as equity_router
 from .api.backtest import router as backtest_router
 from .api.news_api import router as news_router
 from .api.decide import router as decide_router
+from .api.features import router as features_router
 from sqlalchemy.orm import Session
 from .core.db import get_db
 from .services.rules import evaluate_order
@@ -42,6 +43,7 @@ app.include_router(equity_router)
 app.include_router(backtest_router)
 app.include_router(news_router)
 app.include_router(decide_router)
+app.include_router(features_router)
 
 app.mount('/app', StaticFiles(directory='backend/app/static', html=True), name='static')
 
