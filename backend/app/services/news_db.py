@@ -13,6 +13,7 @@ from sqlalchemy import and_, func, select, delete
 from sqlalchemy.orm import Session
 
 from ..models.news import NewsRaw, NewsMetric
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from ..providers.news import NewsItem
 
 
@@ -25,6 +26,16 @@ def _infer_type_from_source(source: str, explicit_type: Optional[str]) -> str:
     if "gdelt" in s:
         return "breaking"
     return "other"
+
+
+_SIA: SentimentIntensityAnalyzer | None = None
+
+
+def _get_sia() -> SentimentIntensityAnalyzer:
+    global _SIA
+    if _SIA is None:
+        _SIA = SentimentIntensityAnalyzer()
+    return _SIA
 
 
 def upsert_news_items_to_db(
@@ -52,6 +63,13 @@ def upsert_news_items_to_db(
         if exists_q:
             skipped += 1
             continue
+        # Basic sentiment from title (placeholder; upgrade to FinBERT later)
+        try:
+            sia = _get_sia()
+            vs = sia.polarity_scores(it.title or "")
+            sent = float(vs.get("compound", 0.0))
+        except Exception:
+            sent = 0.0
         row = NewsRaw(
             ts=ts,
             ticker=ticker,
@@ -59,7 +77,7 @@ def upsert_news_items_to_db(
             title=it.title or "",
             url=url,
             source=it.source or "",
-            sentiment=0.0 if it.sentiment is None else float(it.sentiment),
+            sentiment=float(it.sentiment) if it.sentiment is not None else sent,
         )
         db.add(row)
         written += 1
@@ -119,7 +137,10 @@ def compute_metrics_for_date(
                 type=row.type,
                 window=f"{w}d",
                 count=int(row.count or 0),
-                novelty=0.0,
+                # Heuristic placeholders:
+                # novelty ~ inverse frequency over window (lower count => higher novelty)
+                novelty=0.0 if not row.count else round(1.0 / float(row.count), 4),
+                # reliability ~ source quality proxy TBD; keep 0 for now
                 reliability=0.0,
                 sentiment_avg=float(row.sentiment_avg) if row.sentiment_avg is not None else 0.0,
             )
