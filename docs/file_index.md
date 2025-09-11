@@ -21,6 +21,9 @@ This document summarizes key files and directories and their purpose. Keep updat
 - data/ — Local caches (news, filings). Prices now in DB.
 - logs/ — Server and job logs.
 
+How-to Guides
+- docs/howto/multi_account_git.md — Set up and switch between personal/company GitHub accounts via SSH aliases.
+
 Conventions
 - All files should include a brief header description (see .cursorrules).
 - Keep APIs thin; put logic in services. Keep models simple and cohesive.
