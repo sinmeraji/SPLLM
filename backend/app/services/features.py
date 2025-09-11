@@ -1,3 +1,9 @@
+"""
+Service: price indicators computation.
+- Builds daily indicators from DB minute bars and stores to price_indicators(+_ext).
+- Computes intraday (last 90d) rolling indicators and stores to price_indicators_intraday.
+Usage: call recompute_indicators_for_date(...) or recompute_intraday_indicators_last_90d(...).
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,14 +26,13 @@ def _load_daily_series(db: Session, ticker: str, center: date, back_days: int = 
     """Return list of (day, close, volume_sum) for up to back_days history up to center day inclusive.
     Aggregates minute bars by taking the last close per day and summing volumes.
     """
-    start_dt, end_dt = _to_datespan(center, back_days)
     bars: List[PriceBar] = (
         db.query(PriceBar)
         .filter(
             PriceBar.ticker == ticker.upper(),
             PriceBar.timeframe == 'min',
-            PriceBar.ts >= start_dt,
-            PriceBar.ts <= end_dt,
+            PriceBar.ts >= datetime.combine(center - timedelta(days=back_days), datetime.min.time()),
+            PriceBar.ts <= datetime.combine(center, datetime.max.time()),
         )
         .order_by(PriceBar.ts.asc())
         .all()
@@ -119,16 +124,13 @@ def recompute_intraday_indicators_last_90d(db: Session, *, ticker: str, as_of: d
     macd_signal = 0.0
     for b in bars:
         closes.append(b.close)
-        # RSI-14 on rolling window
         rsi = _rsi(closes, 14)
-        # EMA 20/50 incremental
         ema20_val = _ema(closes[-60:], 20)
         ema50_val = _ema(closes[-100:], 50)
-        # MACD line = EMA12 - EMA26
         ema12 = _ema(closes[-40:], 12)
         ema26 = _ema(closes[-60:], 26)
         macd_line = ema12 - ema26
-        macd_signal = 0.8 * macd_signal + 0.2 * macd_line  # approx 9-period EMA
+        macd_signal = 0.8 * macd_signal + 0.2 * macd_line
         macd_hist = macd_line - macd_signal
         row = db.query(PriceIndicatorIntraday).filter(
             PriceIndicatorIntraday.ticker == ticker.upper(),
@@ -155,17 +157,14 @@ def recompute_indicators_for_date(db: Session, *, ticker: str, d: date) -> bool:
     days = [di for (di, _, _) in series]
     closes = [c for (_, c, _) in series]
     vols = [v for (_, _, v) in series]
-    # compute on the last day (d)
     try:
         idx = days.index(d)
     except ValueError:
         return False
-    # returns
     r1d = _pct(closes[idx], closes[idx - 1]) if idx >= 1 else 0.0
     r5d = _pct(closes[idx], closes[idx - 5]) if idx >= 5 else 0.0
     r20d = _pct(closes[idx], closes[idx - 20]) if idx >= 20 else 0.0
     mom_60d = _pct(closes[idx], closes[idx - 60]) if idx >= 60 else 0.0
-    # vol of daily returns over 20d
     daily_rets: List[float] = []
     for i in range(1, idx + 1):
         if closes[i - 1] != 0:
@@ -173,13 +172,10 @@ def recompute_indicators_for_date(db: Session, *, ticker: str, d: date) -> bool:
         else:
             daily_rets.append(0.0)
     vol_20d = _std(daily_rets, 20)
-    # RSI 14
     rsi_14 = _rsi(closes[: idx + 1], 14)
-    # MACD (12,26,9) using closes up to idx
     ema12 = _ema(closes[: idx + 1][-26:], 12)
     ema26 = _ema(closes[: idx + 1][-26:], 26)
     macd = ema12 - ema26
-    # Volume z-score 20d
     v_zscore_20d = 0.0
     if idx >= 20:
         vwin = vols[idx - 19 : idx + 1]
@@ -187,8 +183,6 @@ def recompute_indicators_for_date(db: Session, *, ticker: str, d: date) -> bool:
         sd = math.sqrt(sum((x - m) ** 2 for x in vwin) / 19.0) if 19 > 0 else 0.0
         if sd > 0:
             v_zscore_20d = (vols[idx] - m) / sd
-
-    # upsert into price_indicators
     row = db.query(PriceIndicator).filter(
         PriceIndicator.date == d,
         PriceIndicator.ticker == ticker.upper(),
@@ -205,35 +199,26 @@ def recompute_indicators_for_date(db: Session, *, ticker: str, d: date) -> bool:
     row.macd = macd
     row.v_zscore_20d = v_zscore_20d
     db.commit()
-    # Extended indicators
     closes_hist = [c for (_, c, _) in series[: idx + 1]]
-    highs_hist = []  # approximate from minute via max close per day
-    lows_hist = []   # approximate from minute via min close per day
-    # compute highs/lows from per-day close proxy (better: use daily bars)
-    # rolling windows
     sma20 = _sma(closes_hist, 20)
     sma50 = _sma(closes_hist, 50)
     sma200 = _sma(closes_hist, 200)
     ema20 = _ema(closes_hist[-60:], 20)
     ema50 = _ema(closes_hist[-100:], 50)
-    # Bollinger Bands 20
     bb_mid = sma20
     bb_sd = _std(closes_hist, 20)
     bb_upper20 = bb_mid + 2 * bb_sd
     bb_lower20 = bb_mid - 2 * bb_sd
-    # MACD signal/hist
     macd_line = macd
-    macd_signal = _ema([macd_line], 9)  # placeholder minimal; improve with series of macd_line
+    macd_signal = _ema([macd_line], 9)
     macd_hist = macd_line - macd_signal
-    # Stoch (using closes as proxy)
     if len(closes_hist) >= 14:
         win = closes_hist[-14:]
         ll, hh = min(win), max(win)
         stoch_k = 0.0 if hh == ll else (closes_hist[-1] - ll) / (hh - ll) * 100.0
     else:
         stoch_k = 0.0
-    stoch_d = stoch_k  # placeholder 3-period SMA
-    # OBV (approx from daily volume sum and price direction)
+    stoch_d = stoch_k
     obv = 0.0
     for i in range(1, len(closes_hist)):
         if closes_hist[i] > closes_hist[i-1]:
