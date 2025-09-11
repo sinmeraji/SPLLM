@@ -1,0 +1,6 @@
+# Cursor Rules: File Header Descriptions
+
+- When creating or editing any file, include a brief header description at the top explaining purpose, key responsibilities, and usage if relevant.
+- Prefer module docstrings (Python) or top-of-file comments (shell, TS/JS, HTML) in the first 10 lines.
+- Keep it concise (2–6 lines). Update when responsibilities change.
+- Scripts should include usage examples or key env vars when applicable.
