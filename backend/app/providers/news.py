@@ -1,3 +1,8 @@
+"""
+Providers: news sources (local cache, GDELT, EDGAR).
+- LocalCacheNewsProvider reads CSV cache under data/news by day.
+- GdeltProvider and EdgarProvider fetch remote headlines/filings for tickers.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

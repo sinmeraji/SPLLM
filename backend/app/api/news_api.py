@@ -1,3 +1,9 @@
+"""
+API: news ingestion, retrieval, and summarization.
+- /news/ingest/{date}: incrementally ingest (gdelt|edgar|local) into CSV cache.
+- /news/{date}: time-gated news retrieval for tickers.
+- /news/summarize/{date}: demo summaries + SSE events.
+"""
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
@@ -7,7 +13,8 @@ import csv
 
 from fastapi import APIRouter, HTTPException
 
-from ..providers.news import LocalCacheNewsProvider, NewsItem
+from ..providers.news import LocalCacheNewsProvider, NewsItem, GdeltProvider, EdgarProvider
+from ..services.news import append_news_items, read_provider_state, write_provider_state
 from ..utils.events import bus
 
 
@@ -58,6 +65,35 @@ def mock_news(payload: Dict[str, Any]) -> Dict[str, Any]:
             w.writerow(r)
 
     return {'written': len(rows), 'file': str(fp)}
+@router.post('/news/ingest/{d}')
+def ingest_news_for_day(d: str, tickers: Optional[str] = None, provider: Optional[str] = None) -> Dict[str, Any]:
+    """Incrementally ingest news for a day and cache to CSV. Provider: gdelt|edgar|local.
+    Uses provider state to support incremental pulls (placeholder until remote providers implemented).
+    """
+    try:
+        day = date.fromisoformat(d)
+    except Exception:
+        raise HTTPException(status_code=400, detail='Invalid date')
+    tickers_list = [t.strip().upper() for t in (tickers.split(',') if tickers else []) if t.strip()]
+
+    prov = (provider or 'local').lower()
+    if prov == 'gdelt':
+        p = GdeltProvider()
+    elif prov == 'edgar':
+        p = EdgarProvider()
+    else:
+        p = LocalCacheNewsProvider()
+
+    # Read state to support incremental fetch (e.g., since_ts); local provider ignores it
+    state = read_provider_state(prov, day)
+    window_end = time(23, 59)
+    items: List[NewsItem] = p.get_time_gated(day, window_end, tickers_list or ['AAPL','MSFT','NVDA','QQQ'])
+
+    res = append_news_items(day, items)
+    # Update state (placeholder: record count)
+    state['last_ingested_count'] = state.get('last_ingested_count', 0) + res['written']
+    write_provider_state(prov, day, state)
+    return {'date': day.isoformat(), 'provider': prov, **res}
 
 
 @router.get('/news/{d}')

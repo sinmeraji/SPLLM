@@ -1,3 +1,8 @@
+"""
+API: decision endpoints (mock + LLM).
+- /decide: mock execution with rule checks and SSE events.
+- /decide/llm: builds context, calls LLM, applies accepted proposals, emits SSE.
+"""
 from __future__ import annotations
 
 from datetime import datetime

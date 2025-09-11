@@ -1,3 +1,8 @@
+"""
+Engine: LLM trade proposal generator (OpenAI JSON-mode scaffold).
+- propose_trades(context) returns typed Proposals from compact JSON response.
+- Uses prompts under backend/app/prompts; respects OPENAI_API_KEY.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

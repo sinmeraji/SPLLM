@@ -1,3 +1,8 @@
+"""
+Service: news cache and incremental ingestion helpers.
+- CSV append with dedupe (hash keys), provider state under data/news/.state.
+- Utilities to read/write provider state for incremental pulls.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

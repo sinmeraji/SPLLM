@@ -1,3 +1,7 @@
+"""
+API: Server-Sent Events endpoint.
+- /events streams SSE messages published via utils.events.EventBus.
+"""
 from __future__ import annotations
 
 import asyncio
