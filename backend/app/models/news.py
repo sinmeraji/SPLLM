@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, date
-from sqlalchemy import String, Float, Integer, DateTime, Date
+from sqlalchemy import String, Float, Integer, DateTime, Date, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -9,6 +9,9 @@ from .base import Base
 
 class NewsRaw(Base):
     __tablename__ = "news_raw"
+    __table_args__ = (
+        UniqueConstraint("ticker", "ts", "url", name="uq_news_raw"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=False), index=True)

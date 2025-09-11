@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..providers.news import LocalCacheNewsProvider, GdeltProvider, EdgarProvider, NewsItem
 from ..services.news_db import upsert_news_items_to_db, compute_metrics_for_date
-from ..models.news import NewsRaw
+from ..models.news import NewsRaw, NewsMetric
 
 
 router = APIRouter()
@@ -76,6 +76,34 @@ def newsdb_get_raw(d: str, tickers: Optional[str] = None, db: Session = Depends(
         'url': r.url,
         'source': r.source,
         'sentiment': r.sentiment,
+    } for r in rows]
+    return {"date": day.isoformat(), "count": len(out), "items": out}
+
+
+@router.get("/newsdb/metrics/{d}")
+def newsdb_get_metrics(d: str, tickers: Optional[str] = None, window: Optional[str] = None, type: Optional[str] = None, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    try:
+        day = date.fromisoformat(d)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date")
+    tickers_list = [t.strip().upper() for t in (tickers.split(',') if tickers else []) if t.strip()]
+    q = db.query(NewsMetric).filter(NewsMetric.date == day)
+    if tickers_list:
+        q = q.filter(NewsMetric.ticker.in_(tickers_list))
+    if window:
+        q = q.filter(NewsMetric.window == window)
+    if type:
+        q = q.filter(NewsMetric.type == type)
+    rows = q.order_by(NewsMetric.ticker.asc(), NewsMetric.type.asc(), NewsMetric.window.asc()).all()
+    out = [{
+        'date': r.date.isoformat(),
+        'ticker': r.ticker,
+        'type': r.type,
+        'window': r.window,
+        'count': r.count,
+        'novelty': r.novelty,
+        'reliability': r.reliability,
+        'sentiment_avg': r.sentiment_avg,
     } for r in rows]
     return {"date": day.isoformat(), "count": len(out), "items": out}
 
