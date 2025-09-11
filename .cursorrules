@@ -4,3 +4,10 @@
 - Prefer module docstrings (Python) or top-of-file comments (shell, TS/JS, HTML) in the first 10 lines.
 - Keep it concise (2–6 lines). Update when responsibilities change.
 - Scripts should include usage examples or key env vars when applicable.
+
+# Cursor Rules: Environment Variables
+
+- Define all environment variables in `configs/env/.env`. Do not hardcode secrets or credentials in code.
+- Organize `.env` into grouped sections: API Keys/Credentials, Provider/User-Agents, Scheduler/Live Jobs, App Config.
+- When introducing a new env var: add it (with empty/default value) to `.env` with a brief comment, and update `README.md` env section if applicable.
+- Scripts and services must source `configs/env/.env` (e.g., `. ./configs/env/.env`) rather than relying on ad-hoc exports.
