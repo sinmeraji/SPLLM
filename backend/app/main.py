@@ -56,11 +56,14 @@ app.mount('/app', StaticFiles(directory='backend/app/static', html=True), name='
 app.include_router(events_router)
 
 from .services.auto_trader import auto_trader_loop
+from .services.scheduler import start_scheduler, stop_scheduler
 import asyncio, os
 
 @app.on_event('startup')
 async def start_auto_trader():
-    # Temporarily disabled auto-trader to avoid unsolicited events
+    # Disable auto-trader by default
+    if os.getenv('ENABLE_SCHEDULER', '1') == '1':
+        start_scheduler()
     return
 
 
