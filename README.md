@@ -1,30 +1,45 @@
 # Spllm
 
-A cross-platform desktop simulator for LLM-guided trading in tech-heavy stocks (NASDAQ-100 + tech-adjacent) with two daily decision windows and continuous intraday risk controls.
+A live LLM-guided trading backend with local caching and compact, cost-aware prompts.
 
 ## Status
-Scaffolded project structure and frozen configuration; implementation to follow.
+Live-mode scaffold implemented: SSE, mock/LLM decide endpoint, news ingest (local/GDELT/EDGAR), and context builder.
 
 ## Structure
-- `backend/` - Python services (data ingestion, simulator, APIs)
-- `ui/tauri/` - Tauri + React desktop UI
-- `configs/` - Simulation config (`sim_config.yaml`), schemas, env templates
-- `docs/decisions/` - Frozen brainstorm context and decisions
+- `backend/` - FastAPI services (prices/news ingest, indicators, decisions)
+- `ui/tauri/` - Desktop UI
+- `configs/` - Config (`sim_config.yaml`), schemas, env templates
+- `docs/decisions/` - Decisions and design docs
 - `data/` - Local cache (prices, news, filings)
-- `logs/` - Orders, portfolio snapshots, metrics
-- `scripts/` - Helpers for setup and runs
+- `logs/` - Events and metrics
+- `scripts/` - Run helpers
 
 ## Keys & Config
-1. Copy `.env.example` to `.env` and fill:
+1. Create `.env` with:
    - `OPENAI_API_KEY`
-   - `ALPACA_KEY_ID`, `ALPACA_SECRET_KEY`
-   - `SEC_CONTACT_EMAIL`
-2. The simulation uses `configs/sim_config.yaml`. Adjust only if we agree to change.
+   - `SEC_USER_AGENT` (e.g., `me@example.com`) and optional `GDELT_USER_AGENT`
+2. Runtime config: `configs/sim_config.yaml`
 
-## Agreed Simulation Window
-- 2025-01-02 → 2025-02-03 ET (RTH only)
+## Run
+```
+bash scripts/restart_backend.sh
+open http://127.0.0.1:8000/app
+```
 
-## Notes
-- Intraday stops/targets trigger continuously using 1-minute bars (5-minute fallback).
-- Fills: minute bar midpoint with 2 bps slippage and $10 commission; fractional shares allowed; min order $1,000 (not for forced exits).
+## Important endpoints
+- Health: `GET /health`
+- SSE: `GET /events`
+- Portfolio: `GET /portfolio`
+- Orders: `POST /orders/market`
+- Decide (mock): `POST /decide`
+- Decide (LLM): `POST /decide/llm`
+- News ingest: `POST /news/ingest/{YYYY-MM-DD}?tickers=AAPL,MSFT&provider=gdelt|edgar|local`
+- News: `GET /news/{YYYY-MM-DD}`
+
+## Live LLM architecture (high level)
+- Cache prices/news locally; compute indicators and news metrics daily and intraday.
+- Build compact, token-budgeted context and call OpenAI in JSON mode.
+- Enforce daily/monthly cost caps; dedupe by request-hash; log costs and decisions.
+
+See `docs/decisions/0003_llm_live_architecture.md` for details and next steps.
 
