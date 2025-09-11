@@ -5,7 +5,7 @@ API: decision endpoints (mock + LLM).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
