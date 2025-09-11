@@ -42,3 +42,38 @@ class PriceIndicator(Base):
     v_zscore_20d: Mapped[float] = mapped_column(Float, default=0.0)
 
 
+class PriceIndicatorExt(Base):
+    __tablename__ = "price_indicators_ext"
+
+    date: Mapped[date] = mapped_column(Date, primary_key=True, index=True)
+    ticker: Mapped[str] = mapped_column(String(16), primary_key=True)
+
+    sma20: Mapped[float] = mapped_column(Float, default=0.0)
+    sma50: Mapped[float] = mapped_column(Float, default=0.0)
+    sma200: Mapped[float] = mapped_column(Float, default=0.0)
+    ema20: Mapped[float] = mapped_column(Float, default=0.0)
+    ema50: Mapped[float] = mapped_column(Float, default=0.0)
+    bb_upper20: Mapped[float] = mapped_column(Float, default=0.0)
+    bb_lower20: Mapped[float] = mapped_column(Float, default=0.0)
+    atr14: Mapped[float] = mapped_column(Float, default=0.0)
+    macd_signal: Mapped[float] = mapped_column(Float, default=0.0)
+    macd_hist: Mapped[float] = mapped_column(Float, default=0.0)
+    stoch_k: Mapped[float] = mapped_column(Float, default=0.0)
+    stoch_d: Mapped[float] = mapped_column(Float, default=0.0)
+    obv: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class PriceIndicatorIntraday(Base):
+    __tablename__ = "price_indicators_intraday"
+
+    ticker: Mapped[str] = mapped_column(String(16), primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=False), primary_key=True, index=True)
+
+    rsi_14: Mapped[float] = mapped_column(Float, default=0.0)
+    ema20: Mapped[float] = mapped_column(Float, default=0.0)
+    ema50: Mapped[float] = mapped_column(Float, default=0.0)
+    macd_line: Mapped[float] = mapped_column(Float, default=0.0)
+    macd_signal: Mapped[float] = mapped_column(Float, default=0.0)
+    macd_hist: Mapped[float] = mapped_column(Float, default=0.0)
+
+

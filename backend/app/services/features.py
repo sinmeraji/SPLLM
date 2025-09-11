@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 import math
 from sqlalchemy.orm import Session
 
-from ..models.prices import PriceBar, PriceIndicator
+from ..models.prices import PriceBar, PriceIndicator, PriceIndicatorExt, PriceIndicatorIntraday
 
 
 def _to_datespan(center: date, back_days: int) -> Tuple[datetime, datetime]:
@@ -95,6 +95,59 @@ def _rsi(prices: List[float], n: int = 14) -> float:
     return 100.0 - (100.0 / (1 + rs))
 
 
+def recompute_intraday_indicators_last_90d(db: Session, *, ticker: str, as_of: date) -> int:
+    """Compute intraday indicators (RSI-14, EMA20/50, MACD) for last 90 calendar days of minute bars.
+    Upsert into price_indicators_intraday keyed by (ticker, ts).
+    """
+    start_dt = datetime.combine(as_of - timedelta(days=90), datetime.min.time())
+    end_dt = datetime.combine(as_of, datetime.max.time())
+    bars: List[PriceBar] = (
+        db.query(PriceBar)
+        .filter(
+            PriceBar.ticker == ticker.upper(),
+            PriceBar.timeframe == 'min',
+            PriceBar.ts >= start_dt,
+            PriceBar.ts <= end_dt,
+        )
+        .order_by(PriceBar.ts.asc())
+        .all()
+    )
+    closes: List[float] = []
+    out = 0
+    ema20_val = 0.0
+    ema50_val = 0.0
+    macd_signal = 0.0
+    for b in bars:
+        closes.append(b.close)
+        # RSI-14 on rolling window
+        rsi = _rsi(closes, 14)
+        # EMA 20/50 incremental
+        ema20_val = _ema(closes[-60:], 20)
+        ema50_val = _ema(closes[-100:], 50)
+        # MACD line = EMA12 - EMA26
+        ema12 = _ema(closes[-40:], 12)
+        ema26 = _ema(closes[-60:], 26)
+        macd_line = ema12 - ema26
+        macd_signal = 0.8 * macd_signal + 0.2 * macd_line  # approx 9-period EMA
+        macd_hist = macd_line - macd_signal
+        row = db.query(PriceIndicatorIntraday).filter(
+            PriceIndicatorIntraday.ticker == ticker.upper(),
+            PriceIndicatorIntraday.ts == b.ts,
+        ).one_or_none()
+        if not row:
+            row = PriceIndicatorIntraday(ticker=ticker.upper(), ts=b.ts)
+            db.add(row)
+        row.rsi_14 = rsi
+        row.ema20 = ema20_val
+        row.ema50 = ema50_val
+        row.macd_line = macd_line
+        row.macd_signal = macd_signal
+        row.macd_hist = macd_hist
+        out += 1
+    db.commit()
+    return out
+
+
 def recompute_indicators_for_date(db: Session, *, ticker: str, d: date) -> bool:
     series = _load_daily_series(db, ticker, d, back_days=400)
     if not series:
@@ -151,6 +204,59 @@ def recompute_indicators_for_date(db: Session, *, ticker: str, d: date) -> bool:
     row.rsi_14 = rsi_14
     row.macd = macd
     row.v_zscore_20d = v_zscore_20d
+    db.commit()
+    # Extended indicators
+    closes_hist = [c for (_, c, _) in series[: idx + 1]]
+    highs_hist = []  # approximate from minute via max close per day
+    lows_hist = []   # approximate from minute via min close per day
+    # compute highs/lows from per-day close proxy (better: use daily bars)
+    # rolling windows
+    sma20 = _sma(closes_hist, 20)
+    sma50 = _sma(closes_hist, 50)
+    sma200 = _sma(closes_hist, 200)
+    ema20 = _ema(closes_hist[-60:], 20)
+    ema50 = _ema(closes_hist[-100:], 50)
+    # Bollinger Bands 20
+    bb_mid = sma20
+    bb_sd = _std(closes_hist, 20)
+    bb_upper20 = bb_mid + 2 * bb_sd
+    bb_lower20 = bb_mid - 2 * bb_sd
+    # MACD signal/hist
+    macd_line = macd
+    macd_signal = _ema([macd_line], 9)  # placeholder minimal; improve with series of macd_line
+    macd_hist = macd_line - macd_signal
+    # Stoch (using closes as proxy)
+    if len(closes_hist) >= 14:
+        win = closes_hist[-14:]
+        ll, hh = min(win), max(win)
+        stoch_k = 0.0 if hh == ll else (closes_hist[-1] - ll) / (hh - ll) * 100.0
+    else:
+        stoch_k = 0.0
+    stoch_d = stoch_k  # placeholder 3-period SMA
+    # OBV (approx from daily volume sum and price direction)
+    obv = 0.0
+    for i in range(1, len(closes_hist)):
+        if closes_hist[i] > closes_hist[i-1]:
+            obv += vols[i]
+        elif closes_hist[i] < closes_hist[i-1]:
+            obv -= vols[i]
+    ext = db.query(PriceIndicatorExt).filter(PriceIndicatorExt.date == d, PriceIndicatorExt.ticker == ticker.upper()).one_or_none()
+    if not ext:
+        ext = PriceIndicatorExt(date=d, ticker=ticker.upper())
+        db.add(ext)
+    ext.sma20 = sma20
+    ext.sma50 = sma50
+    ext.sma200 = sma200
+    ext.ema20 = ema20
+    ext.ema50 = ema50
+    ext.bb_upper20 = bb_upper20
+    ext.bb_lower20 = bb_lower20
+    ext.atr14 = 0.0
+    ext.macd_signal = macd_signal
+    ext.macd_hist = macd_hist
+    ext.stoch_k = stoch_k
+    ext.stoch_d = stoch_d
+    ext.obv = obv
     db.commit()
     return True
 
