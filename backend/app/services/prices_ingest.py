@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Iterable, List
 import csv
 import os
 import httpx
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
@@ -57,12 +58,31 @@ def ingest_csv_bars(db: Session, *, ticker: str, d: date, timeframe: str = "minu
     return rows
 
 
-def ingest_provider_bars(db: Session, *, provider: str, ticker: str, d: date, timeframe: str = "minute") -> int:
+def _timeframe_key(timeframe: str) -> str:
+    return 'min' if timeframe.startswith('min') else 'day'
+
+
+def day_has_bars(db: Session, *, ticker: str, d: date, timeframe: str) -> bool:
+    tf_key = _timeframe_key(timeframe)
+    start_dt = datetime(d.year, d.month, d.day, 0, 0, 0)
+    end_dt = datetime(d.year, d.month, d.day, 23, 59, 59)
+    exists = db.query(PriceBar).filter(
+        PriceBar.ticker == ticker.upper(),
+        PriceBar.timeframe == tf_key,
+        PriceBar.ts >= start_dt,
+        PriceBar.ts <= end_dt,
+    ).limit(1).first()
+    return exists is not None
+
+
+def ingest_provider_bars(db: Session, *, provider: str, ticker: str, d: date, timeframe: str = "minute", skip_if_exists: bool = True) -> int:
     provider = provider.lower()
+    if skip_if_exists and day_has_bars(db, ticker=ticker, d=d, timeframe=timeframe):
+        return 0
     if provider == 'alpaca':
         return _ingest_alpaca(db, ticker=ticker, d=d, timeframe=timeframe)
     # fallback to csv if unknown
-    return ingest_csv_bars(db, ticker=ticker, d=d, timeframe=timeframe)
+    return 0
 
 
 def _ingest_alpaca(db: Session, *, ticker: str, d: date, timeframe: str) -> int:
@@ -73,8 +93,12 @@ def _ingest_alpaca(db: Session, *, ticker: str, d: date, timeframe: str) -> int:
     # Alpaca Market Data v2 bars endpoint
     # Docs: https://docs.alpaca.markets/reference/market-data-api-bars
     tf = '1Min' if timeframe.startswith('min') else '1Day'
-    start = datetime(d.year, d.month, d.day, 9, 30).isoformat() + 'Z'
-    end = datetime(d.year, d.month, d.day, 16, 0).isoformat() + 'Z'
+    # Convert 09:30–16:00 ET to UTC ISO strings with Z
+    ET = ZoneInfo('America/New_York')
+    start_dt = datetime.combine(d, time(9, 30), tzinfo=ET).astimezone(ZoneInfo('UTC'))
+    end_dt = datetime.combine(d, time(16, 0), tzinfo=ET).astimezone(ZoneInfo('UTC'))
+    start = start_dt.isoformat().replace('+00:00', 'Z')
+    end = end_dt.isoformat().replace('+00:00', 'Z')
     url = f"https://data.alpaca.markets/v2/stocks/{ticker.upper()}/bars"
     params = {"start": start, "end": end, "timeframe": tf, "limit": 10000, "adjustment": "raw"}
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
