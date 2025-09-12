@@ -23,7 +23,7 @@ from .api.features import router as features_router
 from sqlalchemy.orm import Session
 from .core.db import get_db
 from .services.rules import evaluate_order
-from .services.sim import apply_order, ensure_initialized, get_cash
+from .services.sim import apply_order, ensure_initialized, get_cash, set_cash
 from .core.config import settings
 from .utils.events import bus
 
@@ -63,6 +63,20 @@ import asyncio, os
 
 @app.on_event('startup')
 async def start_auto_trader():
+    # Optionally reset starting balance from env on startup
+    try:
+        if os.getenv('RESET_BALANCE_ON_START', '0') == '1':
+            from .core.db import SessionLocal
+            with SessionLocal() as db:
+                # If ORIGINAL_BALANCE_USD is set, use it; otherwise keep current
+                orig = os.getenv('ORIGINAL_BALANCE_USD')
+                if orig:
+                    try:
+                        set_cash(db, float(orig))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
     # Disable auto-trader by default
     if os.getenv('ENABLE_SCHEDULER', '1') == '1':
         start_scheduler()
