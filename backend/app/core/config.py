@@ -85,12 +85,34 @@ class Settings(BaseModel):
     news: NewsConfig
     initial_cash_usd: float = 100000.0
 
+def _default_settings() -> Settings:
+    return Settings(
+        run_window=RunWindowConfig(start_et="09:30", end_et="16:00", rth_only=True),
+        universe=UniverseConfig(),
+        risk=RiskConfig(),
+        cadence=CadenceConfig(),
+        execution=ExecutionConfig(),
+        limits=LimitsConfig(),
+        llm=LLMConfig(),
+        prices=PricesConfig(),
+        news=NewsConfig(),
+        initial_cash_usd=float(os.getenv("ORIGINAL_BALANCE_USD", 100000)),
+    )
+
 
 def load_settings() -> Settings:
     config_path = os.getenv("SIM_CONFIG", str(Path("configs/sim_config.yaml").resolve()))
-    with open(config_path, "r", encoding="utf-8") as f:
-        raw: dict[str, Any] = yaml.safe_load(f)
-    return Settings(**raw)
+    p = Path(config_path)
+    if p.exists():
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                raw: dict[str, Any] = yaml.safe_load(f) or {}
+            return Settings(**raw)
+        except Exception:
+            # Fall back to sane defaults if file unreadable/invalid
+            return _default_settings()
+    # No file present: use defaults
+    return _default_settings()
 
 
 settings = load_settings()
