@@ -31,5 +31,7 @@ class Decision(Base):
     proposals_json: Mapped[str] = mapped_column(String(4000))
     executed_json: Mapped[str] = mapped_column(String(4000))
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    llm_call_id: Mapped[int] = mapped_column(Integer, index=True, nullable=True)
+    prices_json: Mapped[str] = mapped_column(String(1000), default="")
 
 

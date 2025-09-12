@@ -155,6 +155,8 @@ async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)
         proposals_json=json.dumps(proposals_payload),
         executed_json=json.dumps([]),
         cost_usd=0.0,
+        llm_call_id=llm_call.id,
+        prices_json=json.dumps(ctx.get("prices", {})),
     )
     db.add(decision)
     db.commit()
