@@ -23,7 +23,7 @@
       <label>Start <input type="date" id="start" /></label>
       <label>End <input type="date" id="end" /></label>
       <button id="load">Load</button>
-      <button id="decide">Decide (mock)</button>
+      <button id="decide">Decide (LLM)</button>
       <button id="runBacktest">Run Backtest</button>
       <canvas id="chart" height="140"></canvas>
       <div id="coverage" style="margin-top:8px;font:12px monospace;color:#555"></div>
@@ -44,7 +44,12 @@
   </div>
   <div class="row">
     <div class="col"><h3>Events</h3><pre id="events"></pre></div>
-    <div class="col"><h3>Status</h3><pre id="status">Ready</pre></div>
+    <div class="col">
+      <h3>Status</h3><pre id="status">Ready</pre>
+      <h3>Recommendations</h3>
+      <div id="recs"></div>
+      <button id="execSelected" disabled>Execute Selected</button>
+    </div>
   </div>
 
   <script>
@@ -156,16 +161,52 @@
         document.getElementById('refresh').onclick = refreshPortfolio;
     document.getElementById('submit').onclick = submitOrder;
     document.getElementById('load').onclick = async ()=>{ await loadBars(); };
+    let lastDecisionId = null;
+    function renderRecommendations(decisionId, proposals){
+      lastDecisionId = decisionId;
+      const container = document.getElementById('recs');
+      container.innerHTML = '';
+      const list = document.createElement('div');
+      proposals.forEach((p, idx)=>{
+        const row = document.createElement('div');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.id = `rec_${idx}`; cb.dataset.idx = String(idx);
+        const label = document.createElement('label');
+        label.htmlFor = cb.id;
+        label.textContent = `${p.ticker} ${p.action} qty=${p.quantity}` + (p.thesis? ` — ${p.thesis}` : '');
+        row.appendChild(cb);
+        row.appendChild(label);
+        list.appendChild(row);
+      });
+      container.appendChild(list);
+      const execBtn = document.getElementById('execSelected');
+      execBtn.disabled = proposals.length === 0;
+    }
+
     document.getElementById('decide').onclick = async ()=>{
       try{
         const t = document.getElementById('ticker').value;
-        const ts = new Date().toISOString();
-        document.getElementById('status').textContent = `Buying 10 ${t}...`;
-        const r = await fetch('/orders/market', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ts_et: ts, ticker: t, side: 'BUY', quantity: 10, price: 100, reason: 'decide-mock', source: 'decide' })});
+        const d = document.getElementById('end').value || new Date().toISOString().slice(0,10);
+        document.getElementById('status').textContent = `Requesting LLM recommendations for ${t} (${d})...`;
+        const r = await fetch('/decide/llm', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tickers:[t], date: d })});
+        if(!r.ok){ throw new Error(await r.text()); }
         const j = await r.json();
-        document.getElementById('status').textContent = `Order: ${JSON.stringify(j)}`;
+        renderRecommendations(j.decision_id, j.proposals || []);
+        document.getElementById('status').textContent = `Received ${ (j.proposals||[]).length } proposals (decision ${j.decision_id}).`;
+      } catch(e){ document.getElementById('status').textContent = `LLM decide error: ${e}`; }
+    };
+
+    document.getElementById('execSelected').onclick = async ()=>{
+      try{
+        if(!lastDecisionId){ document.getElementById('status').textContent = 'No decision to execute.'; return; }
+        const boxes = Array.from(document.querySelectorAll('#recs input[type="checkbox"]'));
+        const selection = boxes.filter(b=>b.checked).map(b=> parseInt(b.dataset.idx));
+        document.getElementById('status').textContent = `Executing ${selection.length} proposals for decision ${lastDecisionId}...`;
+        const r = await fetch(`/decisions/${lastDecisionId}/execute`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ selection }) });
+        const j = await r.json();
+        document.getElementById('status').textContent = `Executed ${j.executed_count} proposals.`;
         await refreshPortfolio();
-      } catch(e){ document.getElementById('status').textContent = `Decide error: ${e}`; }
+      } catch(e){ document.getElementById('status').textContent = `Execute error: ${e}`; }
     };
     document.getElementById('runBacktest').onclick = async ()=>{
       try{
