@@ -26,6 +26,7 @@ from .services.rules import evaluate_order
 from .services.sim import apply_order, ensure_initialized, get_cash, set_cash
 from .core.config import settings
 from .utils.events import bus
+from .utils.logging import setup_logging
 
 
 app = FastAPI(title="Spllm Backend", version="0.1.0")
@@ -63,6 +64,11 @@ import asyncio, os
 
 @app.on_event('startup')
 async def start_auto_trader():
+    # Initialize logging
+    try:
+        setup_logging()
+    except Exception:
+        pass
     # Optionally reset starting balance from env on startup
     try:
         if os.getenv('RESET_BALANCE_ON_START', '0') == '1':
