@@ -1,0 +1,34 @@
+# Provider trust map for news reliability scoring (0.0–1.0)
+# Groups provide defaults; explicit domains override.
+
+defaults:
+  unknown: 0.3
+  low: 0.5
+  tier2: 0.8
+  tier1: 0.95
+  authoritative: 1.0
+
+groups:
+  authoritative:
+    - sec.gov
+  tier1:
+    - bloomberg.com
+    - wsj.com
+    - reuters.com
+    - ft.com
+    - barrons.com
+  tier2:
+    - finance.yahoo.com
+    - yahoo.com
+    - marketwatch.com
+    - seekingalpha.com
+    - cnbc.com
+    - investorplace.com
+  low:
+    - medium.com
+    - substack.com
+
+overrides:
+  edgar: 1.0
+  gdelt: 0.7
+

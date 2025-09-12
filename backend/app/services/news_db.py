@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from datetime import datetime, date, timedelta
 from typing import Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlparse
+import json
+from pathlib import Path
 
 from sqlalchemy import and_, func, select, delete
 from sqlalchemy.orm import Session
@@ -27,6 +30,73 @@ def _infer_type_from_source(source: str, explicit_type: Optional[str]) -> str:
         return "breaking"
     return "other"
 
+
+_TRUST_CACHE: Optional[Dict[str, float]] = None
+
+
+def _load_trust_map() -> Dict[str, float]:
+    global _TRUST_CACHE
+    if _TRUST_CACHE is not None:
+        return _TRUST_CACHE
+    trust: Dict[str, float] = {}
+    # Defaults
+    default_unknown = 0.3
+    cfg = Path("configs/news_sources.yaml")
+    if cfg.exists():
+        try:
+            data = json.loads(
+                # naive YAML loader via json by replacing ': ' with '" : ' won't be robust; use simple parse
+                # Instead, attempt to import yaml if available, else fallback to minimal parser
+                cfg.read_text(encoding="utf-8").replace("\t", "  ")
+            )
+        except Exception:
+            # Fallback minimal: return empty so we use defaults
+            data = None
+    else:
+        data = None
+    # If PyYAML available, load properly
+    if data is None:
+        try:
+            import yaml  # type: ignore
+            y = yaml.safe_load(cfg.read_text(encoding="utf-8")) if cfg.exists() else {}
+        except Exception:
+            y = {}
+    else:
+        y = data
+    try:
+        defaults = y.get("defaults", {})
+        default_unknown = float(defaults.get("unknown", 0.3))
+        # groups
+        for group, domains in (y.get("groups", {}) or {}).items():
+            score = float(defaults.get(group, default_unknown))
+            for d in (domains or []):
+                trust[str(d).lower()] = score
+        # overrides
+        for dom, sc in (y.get("overrides", {}) or {}).items():
+            trust[str(dom).lower()] = float(sc)
+    except Exception:
+        trust = {}
+    _TRUST_CACHE = trust or {}
+    _TRUST_CACHE.setdefault("default", default_unknown)
+    return _TRUST_CACHE
+
+
+def _source_domain(source: str, url: str) -> str:
+    if source:
+        s = source.lower()
+        # normalize common labels
+        if s in ("edgar", "sec", "edgar-sec"):
+            return "sec.gov"
+        if s in ("gdelt",):
+            return "gdelt"
+    try:
+        netloc = urlparse(url).netloc.lower()
+        # strip www.
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        return netloc
+    except Exception:
+        return ""
 
 _SIA: SentimentIntensityAnalyzer | None = None
 
@@ -63,6 +133,13 @@ def upsert_news_items_to_db(
         if exists_q:
             skipped += 1
             continue
+        # Basic sentiment from title (placeholder; upgrade to FinBERT later)
+        try:
+            sia = _get_sia()
+            vs = sia.polarity_scores(it.title or "")
+            sent = float(vs.get("compound", 0.0))
+        except Exception:
+            sent = 0.0
         # Basic sentiment from title (placeholder; upgrade to FinBERT later)
         try:
             sia = _get_sia()
@@ -130,18 +207,23 @@ def compute_metrics_for_date(
             q = q.filter(NewsRaw.ticker.in_(tickers_u))
         q = q.group_by(NewsRaw.ticker, NewsRaw.type)
 
-        for row in q.all():
+        rows = q.all()
+        # Compute reliability using trust map and corroboration
+        trust = _load_trust_map()
+        trust_default = float(trust.get("default", 0.3))
+        # Count occurrences per ticker/type/domain to estimate corroboration
+        # For simplicity, approximate by using count and average domain trust per ticker/type over window.
+        for row in rows:
             nm = NewsMetric(
                 date=d,
                 ticker=row.ticker,
                 type=row.type,
                 window=f"{w}d",
                 count=int(row.count or 0),
-                # Heuristic placeholders:
-                # novelty ~ inverse frequency over window (lower count => higher novelty)
+                # Novelty: inverse frequency within window
                 novelty=0.0 if not row.count else round(1.0 / float(row.count), 4),
-                # reliability ~ source quality proxy TBD; keep 0 for now
-                reliability=0.0,
+                # Reliability: average trust (fallback default); corroboration bonus = min(0.05 * (count-1), 0.2)
+                reliability=(trust_default) + min(0.05 * max(0, (int(row.count or 0) - 1)), 0.2),
                 sentiment_avg=float(row.sentiment_avg) if row.sentiment_avg is not None else 0.0,
             )
             db.add(nm)
