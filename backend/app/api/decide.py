@@ -16,7 +16,7 @@ from ..core.db import get_db
 from ..services.rules import evaluate_order
 from ..services.sim import apply_order, ensure_initialized, get_cash
 from ..utils.events import bus
-from ..services.context import build_news_context
+from ..services.context import build_news_context, build_decision_context
 from ..engine.llm import propose_trades, Proposal
 
 
@@ -120,13 +120,8 @@ async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)
     d_s: Optional[str] = payload.get('date')
     day = ts.date() if not d_s else datetime.fromisoformat(d_s).date()
 
-    # Build context
-    ctx = {
-        "as_of": ts.isoformat(),
-        "tickers": tickers,
-        "portfolio_cash": get_cash(db),
-        "news": build_news_context(day, time(16, 0), tickers),
-    }
+    # Build full decision context
+    ctx = build_decision_context(db, day, time(16, 0), tickers)
     # Call LLM to get proposals
     props: List[Proposal] = propose_trades(ctx)
 
