@@ -36,4 +36,6 @@ echo $SQL_PID > /tmp/spllm_sqlite.pid
 
 sleep 1
 echo "Health: $(curl -s http://127.0.0.1:8000/health || echo failed)"
+echo "API:   http://127.0.0.1:8000/"
+echo "UI:    http://127.0.0.1:8000/app/"
 echo "DB UI: http://127.0.0.1:8081/"
