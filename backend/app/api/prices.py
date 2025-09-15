@@ -24,8 +24,11 @@ router = APIRouter()
 def get_universe() -> dict:
     path = Path('configs/universe/tickers.txt')
     if not path.exists():
-        return {"tickers": []}
+        # Sensible defaults if file missing
+        return {"tickers": ["AAPL", "MSFT", "NVDA", "QQQ"]}
     tickers = [t.strip() for t in path.read_text().splitlines() if t.strip()]
+    if not tickers:
+        tickers = ["AAPL", "MSFT", "NVDA", "QQQ"]
     return {"tickers": tickers}
 
 
