@@ -6,13 +6,13 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from ..providers.news import LocalCacheNewsProvider, NewsItem
-from ..models.news import NewsMetric
+from ..models.news import NewsMetric, NewsRaw
 from ..models.prices import PriceIndicator, PriceIndicatorExt
 from ..models.portfolio import Position
 from ..services.sim import get_cash
 
 
-def build_news_context(d: date, window_end: time, tickers: List[str]) -> Dict[str, Any]:
+def build_news_context_file(d: date, window_end: time, tickers: List[str]) -> Dict[str, Any]:
     provider = LocalCacheNewsProvider()
     items = provider.get_time_gated(d, window_end, tickers)
 
@@ -30,6 +30,34 @@ def build_news_context(d: date, window_end: time, tickers: List[str]) -> Dict[st
     # Limit to last 5 items per ticker to keep prompt bounded
     limited = {t: arr[-5:] for t, arr in per_ticker.items()}
     return {"news": limited, "counts": {t: len(arr) for t, arr in per_ticker.items()}}
+
+
+def build_news_context_db(db: Session, d: date, window_end: time, tickers: List[str], per_ticker_limit: int = 5) -> Dict[str, Any]:
+    start_dt = datetime.combine(d, time(0, 0))
+    end_dt = datetime.combine(d, window_end)
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for t in tickers:
+        rows = (
+            db.query(NewsRaw)
+            .filter(NewsRaw.ticker == t)
+            .filter(NewsRaw.ts >= start_dt, NewsRaw.ts <= end_dt)
+            .order_by(NewsRaw.ts.desc())
+            .limit(per_ticker_limit)
+            .all()
+        )
+        if rows:
+            out[t] = [
+                {
+                    "ts": r.ts.isoformat(),
+                    "title": r.title,
+                    "url": r.url,
+                    "source": r.source,
+                    "sentiment": r.sentiment,
+                    "type": r.type,
+                }
+                for r in rows
+            ][::-1]  # chronological
+    return {"news": out, "counts": {t: len(v) for t, v in out.items()}}
 
 
 
@@ -96,7 +124,10 @@ def build_decision_context(db: Session, d: date, window_end: time, tickers: List
     portfolio = _build_portfolio_context(db)
     prices = _build_price_features(db, d, tickers_u)
     news_metrics = _build_news_metrics(db, d, tickers_u)
-    news_briefs = build_news_context(d, window_end, tickers_u)
+    news_briefs = build_news_context_db(db, d, window_end, tickers_u)
+    if not news_briefs["news"]:
+        # fallback to file cache if DB empty
+        news_briefs = build_news_context_file(d, window_end, tickers_u)
     policy = {
         "limits": {"max_positions": 15, "max_weight_pct": 10, "min_cash_pct": 5},
         "costs": {"commission_usd": 10, "slippage_bps": 2},

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import json
 import hashlib
 import os
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -25,6 +26,7 @@ from ..models.llm import LLMCall, Decision
 
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 
 @router.post('/decide')
@@ -38,6 +40,7 @@ async def decide_and_execute(payload: Dict[str, Any], db: Session = Depends(get_
     }
     """
     ensure_initialized(db, settings.initial_cash_usd)
+    log.info("/decide (mock) called payload=%s", payload)
 
     tickers: List[str] = [t.upper() for t in (payload.get('tickers') or [])]
     if not tickers:
@@ -107,6 +110,7 @@ async def decide_and_execute(payload: Dict[str, Any], db: Session = Depends(get_
             "reason": "decide-mock",
             "accepted": True,
         })
+        log.info("/decide (mock) executed order_id=%s ticker=%s qty=%s", order.id, t, rule.adjusted_quantity)
 
     return {"results": results, "cash": cash}
 
@@ -116,6 +120,7 @@ async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)
     payload: { tickers: [..], ts_et?: ISO, date?: YYYY-MM-DD }
     """
     ensure_initialized(db, settings.initial_cash_usd)
+    log.info("/decide/llm called payload=%s", payload)
     tickers: List[str] = [t.upper() for t in (payload.get('tickers') or [])]
     if not tickers:
         raise HTTPException(status_code=400, detail='tickers required')
@@ -124,10 +129,11 @@ async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)
     d_s: Optional[str] = payload.get('date')
     day = ts.date() if not d_s else datetime.fromisoformat(d_s).date()
 
-    # Build full decision context
+    # Build full decision context (includes price features, news metrics, and raw headlines)
     ctx = build_decision_context(db, day, time(16, 0), tickers)
     # Call LLM to get proposals
     props: List[Proposal] = propose_trades(ctx)
+    log.info("/decide/llm proposals_count=%d for tickers=%s", len(props), tickers)
     proposals_payload = [getattr(p, '__dict__', dict()) for p in props]
 
     # Persist LLMCall and Decision (pending; no execution here)
@@ -161,6 +167,7 @@ async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)
     db.add(decision)
     db.commit()
     db.refresh(decision)
+    log.info("/decide/llm stored decision_id=%s proposals=%d", decision.id, len(proposals_payload))
 
     # Emit SSE recommendations event
     await bus.publish({
@@ -215,6 +222,7 @@ async def execute_decision(decision_id: int, payload: Dict[str, Any], db: Sessio
     proposals = json.loads(d.proposals_json or "[]")
     selection = payload.get("selection")  # list of indices or None for all
     to_exec = proposals if not selection else [proposals[i] for i in selection if 0 <= i < len(proposals)]
+    log.info("/decisions/%s/execute selection_count=%d", decision_id, len(to_exec))
 
     ts = datetime.utcnow()
     ensure_initialized(db, settings.initial_cash_usd)
@@ -283,6 +291,7 @@ async def execute_decision(decision_id: int, payload: Dict[str, Any], db: Sessio
     d.executed_json = json.dumps(executed)
     db.commit()
     await bus.publish({"type": "decision_executed", "decision_id": d.id, "count": len(executed)})
+    log.info("/decisions/%s/execute executed_count=%d", d.id, len(executed))
     return {"decision_id": d.id, "executed_count": len(executed), "executed": executed}
 
 

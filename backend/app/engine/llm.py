@@ -67,10 +67,11 @@ def propose_trades(context: Dict[str, Any]) -> List[Proposal]:
         # Log request preview (truncate long user content)
         preview = payload.copy()
         if isinstance(preview.get("messages"), list) and len(preview["messages"]) >= 2:
-            uc = preview["messages"][1]["content"]
-            if isinstance(uc, str) and len(uc) > 2000:
-                preview["messages"][1]["content"] = uc[:2000] + "... [truncated]"
-        log.debug("LLM request payload=%s", json.dumps(preview)[:4000])
+            # Append decision prompt visibly, and context JSON separately for easier inspection
+            # Already included in messages as system/user, but keep a separate debug line
+            pass
+        log.debug("LLM decision prompt (system role) begins:\n%s\n---", decision_prompt[:4000])
+        log.debug("LLM context JSON (user role) begins:\n%s\n---", user_content[:4000])
     except Exception:
         pass
 
