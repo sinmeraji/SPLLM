@@ -38,13 +38,7 @@ def propose_trades(context: Dict[str, Any]) -> List[Proposal]:
     # Minimal OpenAI call scaffold (JSON mode) — replace model as needed
     api_key = os.environ["OPENAI_API_KEY"]
     log = logging.getLogger(__name__)
-    system_path = Path("backend/app/prompts/system.txt")
     decision_path = Path("backend/app/prompts/decision.txt")
-    system_prompt = (
-        system_path.read_text(encoding="utf-8")
-        if system_path.exists()
-        else "You are a cautious trading assistant."
-    )
     decision_prompt = (
         decision_path.read_text(encoding="utf-8")
         if decision_path.exists()
@@ -52,8 +46,7 @@ def propose_trades(context: Dict[str, Any]) -> List[Proposal]:
     )
     try:
         log.info(
-            "LLM prompts: system=%s decision=%s",
-            str(system_path) if system_path.exists() else "<default>",
+            "LLM prompts: decision=%s (system.txt disabled)",
             str(decision_path) if decision_path.exists() else "<default>",
         )
     except Exception:
@@ -64,8 +57,8 @@ def propose_trades(context: Dict[str, Any]) -> List[Proposal]:
     payload = {
         "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": decision_prompt + "\n\n" + user_content},
+            {"role": "system", "content": decision_prompt},
+            {"role": "user", "content": user_content},
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.2,
