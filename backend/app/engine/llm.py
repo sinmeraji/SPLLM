@@ -11,6 +11,7 @@ import os
 import json
 import httpx
 from pathlib import Path
+import logging
 
 
 @dataclass
@@ -36,10 +37,28 @@ def propose_trades(context: Dict[str, Any]) -> List[Proposal]:
         return []
     # Minimal OpenAI call scaffold (JSON mode) — replace model as needed
     api_key = os.environ["OPENAI_API_KEY"]
-    system_prompt = (Path("backend/app/prompts/system.txt").read_text(encoding="utf-8")
-                     if Path("backend/app/prompts/system.txt").exists() else "You are a cautious trading assistant.")
-    decision_prompt = (Path("backend/app/prompts/decision.txt").read_text(encoding="utf-8")
-                       if Path("backend/app/prompts/decision.txt").exists() else "Propose trades as JSON with proposals[].")
+    log = logging.getLogger(__name__)
+    system_path = Path("backend/app/prompts/system.txt")
+    decision_path = Path("backend/app/prompts/decision.txt")
+    system_prompt = (
+        system_path.read_text(encoding="utf-8")
+        if system_path.exists()
+        else "You are a cautious trading assistant."
+    )
+    decision_prompt = (
+        decision_path.read_text(encoding="utf-8")
+        if decision_path.exists()
+        else "Propose trades as JSON with proposals[]."
+    )
+    try:
+        log.info(
+            "LLM prompts: system=%s decision=%s",
+            str(system_path) if system_path.exists() else "<default>",
+            str(decision_path) if decision_path.exists() else "<default>",
+        )
+    except Exception:
+        pass
+
     user_content = json.dumps({"context": context}, separators=(",", ":"))
 
     payload = {
@@ -52,32 +71,62 @@ def propose_trades(context: Dict[str, Any]) -> List[Proposal]:
         "temperature": 0.2,
     }
     try:
+        # Log request preview (truncate long user content)
+        preview = payload.copy()
+        if isinstance(preview.get("messages"), list) and len(preview["messages"]) >= 2:
+            uc = preview["messages"][1]["content"]
+            if isinstance(uc, str) and len(uc) > 2000:
+                preview["messages"][1]["content"] = uc[:2000] + "... [truncated]"
+        log.debug("LLM request payload=%s", json.dumps(preview)[:4000])
+    except Exception:
+        pass
+
+    try:
         with httpx.Client(timeout=30) as client:
-            r = client.post("https://api.openai.com/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                            json=payload)
+            r = client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
             r.raise_for_status()
             data = r.json()
             content = data["choices"][0]["message"]["content"]
+            try:
+                log.debug(
+                    "LLM raw content preview=%s",
+                    (content[:2000] + "... [truncated]") if len(content) > 2000 else content,
+                )
+            except Exception:
+                pass
             obj = json.loads(content)
             proposals_raw = (obj.get("proposals") or [])
             out: List[Proposal] = []
             for p in proposals_raw:
                 try:
-                    out.append(Proposal(
-                        ticker=str(p["ticker"]).upper(),
-                        action=str(p["action"]).upper(),
-                        quantity=float(p["quantity"]),
-                        max_price=p.get("max_price"),
-                        min_price=p.get("min_price"),
-                        thesis=p.get("thesis"),
-                        horizon_days=p.get("horizon_days"),
-                        stop=p.get("stop"),
-                        take_profit=p.get("take_profit"),
-                        confidence=p.get("confidence"),
-                    ))
+                    out.append(
+                        Proposal(
+                            ticker=str(p["ticker"]).upper(),
+                            action=str(p["action"]).upper(),
+                            quantity=float(p["quantity"]),
+                            max_price=p.get("max_price"),
+                            min_price=p.get("min_price"),
+                            thesis=p.get("thesis"),
+                            horizon_days=p.get("horizon_days"),
+                            stop=p.get("stop"),
+                            take_profit=p.get("take_profit"),
+                            confidence=p.get("confidence"),
+                        )
+                    )
                 except Exception:
                     continue
+            try:
+                log.info("LLM proposals count=%d", len(out))
+            except Exception:
+                pass
             return out
-    except Exception:
+    except Exception as e:
+        try:
+            log.error("LLM call failed: %s", e)
+        except Exception:
+            pass
         return []
