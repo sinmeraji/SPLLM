@@ -21,7 +21,7 @@ from ..services.rules import evaluate_order
 from ..services.sim import apply_order, ensure_initialized, get_cash
 from ..utils.events import bus
 from ..services.context import build_news_context, build_decision_context
-from ..engine.llm import propose_trades, Proposal
+from ..engine.llm import propose_trades, Proposal, get_last_usage
 from ..models.llm import LLMCall, Decision
 
 
@@ -140,13 +140,22 @@ async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)
     req_json = json.dumps(ctx, separators=(",", ":"))
     resp_json = json.dumps({"proposals": proposals_payload}, separators=(",", ":"))
     req_hash = hashlib.sha1(req_json.encode('utf-8')).hexdigest()
+    usage = get_last_usage()
+    pt = int(usage.get("prompt_tokens") or 0)
+    ct = int(usage.get("completion_tokens") or 0)
+    # naive cost model; adjust with actual pricing if desired
+    # gpt-4o-mini example pricing (approx): $0.0003/1K input, $0.0006/1K output
+    in_cost = (pt / 1000.0) * float(os.getenv("OPENAI_IN_COST_PER_1K", "0.0003"))
+    out_cost = (ct / 1000.0) * float(os.getenv("OPENAI_OUT_COST_PER_1K", "0.0006"))
+    total_cost = round(in_cost + out_cost, 6)
+
     llm_call = LLMCall(
         ts=ts,
         request_hash=req_hash,
         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        prompt_tokens=0,
-        completion_tokens=0,
-        cost_usd=0.0,
+        prompt_tokens=pt,
+        completion_tokens=ct,
+        cost_usd=total_cost,
         request_json=req_json[:3900],
         response_json=resp_json[:3900],
     )
@@ -160,7 +169,7 @@ async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)
         tickers_json=json.dumps(tickers),
         proposals_json=json.dumps(proposals_payload),
         executed_json=json.dumps([]),
-        cost_usd=0.0,
+        cost_usd=total_cost,
         llm_call_id=llm_call.id,
         prices_json=json.dumps(ctx.get("prices", {})),
     )

@@ -28,6 +28,13 @@ class Proposal:
     confidence: float | None = None
 
 
+_last_usage: Dict[str, Any] = {}
+
+
+def get_last_usage() -> Dict[str, Any]:
+    return dict(_last_usage)
+
+
 def propose_trades(context: Dict[str, Any]) -> List[Proposal]:
     """
     LLM stub: if OPENAI_API_KEY is present, this will later call the model.
@@ -89,6 +96,17 @@ def propose_trades(context: Dict[str, Any]) -> List[Proposal]:
                 log.debug(
                     "LLM raw content preview=%s",
                     (content[:2000] + "... [truncated]") if len(content) > 2000 else content,
+                )
+            except Exception:
+                pass
+            # capture usage for cost computation by callers
+            try:
+                global _last_usage
+                _last_usage = data.get("usage", {}) or {}
+                log.info(
+                    "LLM usage prompt_tokens=%s completion_tokens=%s",
+                    _last_usage.get("prompt_tokens"),
+                    _last_usage.get("completion_tokens"),
                 )
             except Exception:
                 pass
