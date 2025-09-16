@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from ..core.db import SessionLocal
-from ..services.prices_ingest import ingest_provider_bars
+from ..services.prices_ingest import ingest_provider_bars, enforce_retention
 from ..providers.news import GdeltProvider, EdgarProvider, EdgarSubmissionsProvider
 from ..services.news_db import upsert_news_items_to_db, compute_metrics_for_date
 from ..services.features import (
@@ -28,7 +28,7 @@ from ..services.features import (
 )
 from ..utils.events import bus
 from ..engine.llm import propose_trades, Proposal
-from ..services.context import build_news_context
+from ..services.context import build_decision_context
 from ..core.config import settings
 from ..services.rules import evaluate_order
 from ..services.sim import apply_order, ensure_initialized, get_cash
@@ -80,9 +80,25 @@ async def eod_job() -> None:
     with SessionLocal() as db:
         for t in tickers:
             try:
+                # Ensure daily bar for the day exists before computing indicators
+                ingest_provider_bars(db, provider="alpaca", ticker=t, d=d_et, timeframe="day", skip_if_exists=False)
+            except Exception:
+                pass
+            try:
                 recompute_indicators_for_date(db, ticker=t, d=d_et)
             except Exception:
                 continue
+        # Enforce retention after EOD processing
+        try:
+            minute_days = int(os.getenv("MINUTE_RETENTION_DAYS", "60"))
+            day_days = int(os.getenv("DAILY_RETENTION_DAYS", "730"))
+            stats = enforce_retention(db, minute_keep_days=minute_days, day_keep_days=day_days, tickers=tickers)
+            try:
+                await bus.publish({"type": "retention", "deleted_minute": stats.get("deleted_minute", 0), "deleted_daily": stats.get("deleted_daily", 0)})
+            except Exception:
+                pass
+        except Exception:
+            pass
     try:
         await bus.publish({"type": "job", "name": "eod", "status": "end", "date": d_et.isoformat()})
     except Exception:
@@ -135,12 +151,8 @@ async def llm_job() -> None:
             ensure_initialized(db, settings.initial_cash_usd)
         except Exception:
             pass
-        ctx = {
-            "as_of": ts.isoformat(),
-            "tickers": tickers,
-            "portfolio_cash": get_cash(db),
-            "news": build_news_context(d_et, time(16, 0), tickers),
-        }
+        # Build full decision context (same as /decide/llm)
+        ctx = build_decision_context(db, d_et, time(16, 0), tickers)
         try:
             props: list[Proposal] = propose_trades(ctx)
         except Exception:

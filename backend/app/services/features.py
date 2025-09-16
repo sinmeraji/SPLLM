@@ -1,6 +1,6 @@
 """
 Service: price indicators computation.
-- Builds daily indicators from DB minute bars and stores to price_indicators(+_ext).
+- Builds daily indicators from DB daily bars and stores to price_indicators(+_ext).
 - Computes intraday (last 90d) rolling indicators and stores to price_indicators_intraday.
 Usage: call recompute_indicators_for_date(...) or recompute_intraday_indicators_last_90d(...).
 """
@@ -23,32 +23,23 @@ def _to_datespan(center: date, back_days: int) -> Tuple[datetime, datetime]:
 
 
 def _load_daily_series(db: Session, ticker: str, center: date, back_days: int = 400) -> List[Tuple[date, float, float]]:
-    """Return list of (day, close, volume_sum) for up to back_days history up to center day inclusive.
-    Aggregates minute bars by taking the last close per day and summing volumes.
+    """Return list of (day, close, volume) from daily bars for up to back_days up to center inclusive.
+    Uses timeframe 'day' so long lookbacks (e.g., 200 SMA) work independent of minute retention.
     """
     bars: List[PriceBar] = (
         db.query(PriceBar)
         .filter(
             PriceBar.ticker == ticker.upper(),
-            PriceBar.timeframe == 'min',
+            PriceBar.timeframe == 'day',
             PriceBar.ts >= datetime.combine(center - timedelta(days=back_days), datetime.min.time()),
             PriceBar.ts <= datetime.combine(center, datetime.max.time()),
         )
         .order_by(PriceBar.ts.asc())
         .all()
     )
-    per_day: Dict[date, Tuple[datetime, float, float]] = {}
+    series: List[Tuple[date, float, float]] = []
     for b in bars:
-        d = b.ts.date()
-        if d not in per_day:
-            per_day[d] = (b.ts, b.close, b.volume)
-        else:
-            last_ts, last_close, vol_sum = per_day[d]
-            if b.ts >= last_ts:
-                last_ts, last_close = b.ts, b.close
-            per_day[d] = (last_ts, last_close, vol_sum + (b.volume or 0.0))
-    series = [(d, c, v) for d, (_, c, v) in per_day.items()]
-    series.sort(key=lambda x: x[0])
+        series.append((b.ts.date(), b.close, b.volume or 0.0))
     return series
 
 
@@ -209,8 +200,14 @@ def recompute_indicators_for_date(db: Session, *, ticker: str, d: date) -> bool:
     bb_sd = _std(closes_hist, 20)
     bb_upper20 = bb_mid + 2 * bb_sd
     bb_lower20 = bb_mid - 2 * bb_sd
-    macd_line = macd
-    macd_signal = _ema([macd_line], 9)
+    # Compute MACD signal as 9-day EMA over MACD line history up to date d
+    macd_lines: List[float] = []
+    for i in range(len(closes_hist)):
+        ema12_i = _ema(closes_hist[: i + 1], 12)
+        ema26_i = _ema(closes_hist[: i + 1], 26)
+        macd_lines.append(ema12_i - ema26_i)
+    macd_line = macd_lines[-1] if macd_lines else 0.0
+    macd_signal = _ema(macd_lines, 9)
     macd_hist = macd_line - macd_signal
     if len(closes_hist) >= 14:
         win = closes_hist[-14:]

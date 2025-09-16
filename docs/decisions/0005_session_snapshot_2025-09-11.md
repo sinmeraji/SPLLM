@@ -42,3 +42,5 @@ Use these snapshots to resume work quickly and track architectural intent.
 - Maintain idempotency in all ingestion paths (use unique constraints + upserts/try-commit/rollback).
 
 
+
+

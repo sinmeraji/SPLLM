@@ -19,7 +19,7 @@ from datetime import date, datetime, time
 from typing import List
 
 from backend.app.core.db import SessionLocal
-from backend.app.providers.news import GdeltProvider, EdgarProvider, EdgarSubmissionsProvider, NewsItem
+from backend.app.providers.news import GdeltProvider, EdgarProvider, EdgarSubmissionsProvider, YahooRSSProvider, NewsItem
 from backend.app.services.news_db import upsert_news_items_to_db, compute_metrics_for_date
 
 
@@ -50,6 +50,8 @@ def _providers_from_env():
             out.append((EdgarProvider(), "filings"))
         elif n in ("edgar_submissions", "edgar_json"):
             out.append((EdgarSubmissionsProvider(), "filings"))
+        elif n in ("yahoo", "yahoo_rss", "rss"):
+            out.append((YahooRSSProvider(), None))
     return out
 
 
@@ -70,5 +72,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 

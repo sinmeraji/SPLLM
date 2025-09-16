@@ -164,7 +164,9 @@ def upsert_news_items_to_db(
 
 
 def _window_days_list() -> List[int]:
-    return [1, 7, 30, 90]
+    # Rolling windows used for metrics (as-of date d)
+    # 1d, 3d, 7d for LLM context; 30d/90d for trend/novelty stability
+    return [1, 3, 7, 30, 90]
 
 
 def compute_metrics_for_date(

@@ -5,7 +5,7 @@ Service: prices ingestion.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Iterable, List
 import csv
@@ -106,7 +106,8 @@ def _ingest_alpaca(db: Session, *, ticker: str, d: date, timeframe: str) -> int:
     start = start_dt.isoformat().replace('+00:00', 'Z')
     end = end_dt.isoformat().replace('+00:00', 'Z')
     url = f"https://data.alpaca.markets/v2/stocks/{ticker.upper()}/bars"
-    params = {"start": start, "end": end, "timeframe": tf, "limit": 10000, "adjustment": "raw"}
+    feed = os.getenv('ALPACA_FEED', 'iex')
+    params = {"start": start, "end": end, "timeframe": tf, "limit": 10000, "adjustment": "raw", "feed": feed}
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
     try:
         with httpx.Client(timeout=20) as client:
@@ -140,3 +141,33 @@ def _ingest_alpaca(db: Session, *, ticker: str, d: date, timeframe: str) -> int:
     except Exception:
         db.rollback()
         return 0
+
+
+def enforce_retention(
+    db: Session,
+    *,
+    minute_keep_days: int = 60,
+    day_keep_days: int = 730,
+    tickers: list[str] | None = None,
+) -> dict:
+    """Delete old bars beyond retention windows.
+
+    minute_keep_days: keep this many most recent days of minute bars
+    day_keep_days: keep this many most recent days of daily bars
+    tickers: optional subset; if None, apply to all
+    """
+    now = datetime.now()
+    cutoff_min = now - timedelta(days=max(1, minute_keep_days))
+    cutoff_day = now - timedelta(days=max(1, day_keep_days))
+
+    q_min = db.query(PriceBar).filter(PriceBar.timeframe == 'min', PriceBar.ts < cutoff_min)
+    q_day = db.query(PriceBar).filter(PriceBar.timeframe == 'day', PriceBar.ts < cutoff_day)
+    if tickers:
+        uppers = [t.upper() for t in tickers]
+        q_min = q_min.filter(PriceBar.ticker.in_(uppers))
+        q_day = q_day.filter(PriceBar.ticker.in_(uppers))
+
+    deleted_min = q_min.delete(synchronize_session=False)
+    deleted_day = q_day.delete(synchronize_session=False)
+    db.commit()
+    return {"deleted_minute": int(deleted_min or 0), "deleted_daily": int(deleted_day or 0)}

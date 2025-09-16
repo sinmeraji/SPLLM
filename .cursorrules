@@ -11,3 +11,9 @@
 - Organize `.env` into grouped sections: API Keys/Credentials, Provider/User-Agents, Scheduler/Live Jobs, App Config.
 - When introducing a new env var: add it (with empty/default value) to `.env` with a brief comment, and update `README.md` env section if applicable.
 - Scripts and services must source `configs/env/.env` (e.g., `. ./configs/env/.env`) rather than relying on ad-hoc exports.
+
+# Cursor Rules: .env Safety
+
+- Never overwrite or replace `configs/env/.env` contents.
+- Only append missing keys or update specific key values in place, preserving all existing lines and comments.
+- Back up the current `.env` to `configs/env/.env.bak` before any automated modifications.

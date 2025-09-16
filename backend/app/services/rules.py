@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..core.config import settings
 from ..models.portfolio import Position
+from ..providers.prices import get_latest_trade_price_alpaca
 
 
 @dataclass
@@ -55,8 +56,10 @@ def evaluate_order(
     pos: Position | None = db.query(Position).filter(Position.ticker == ticker).one_or_none()
     current_qty = pos.quantity if pos else 0.0
 
-    # Compute notional
-    notional = abs(quantity) * reference_price
+    # Compute notional using latest price if available
+    latest = get_latest_trade_price_alpaca(ticker)
+    use_price = float(latest) if latest is not None else float(reference_price)
+    notional = abs(quantity) * use_price
 
     # Enforce min order for entries/adds/trims, but not for forced exits (handled by caller)
     if side == "BUY" and notional < settings.execution.min_order_usd:
@@ -69,8 +72,14 @@ def evaluate_order(
         if (cash - notional - settings.execution.commission_usd) < (min_cash * cash):
             reasons.append("min_cash_buffer_breach")
 
-        # Max position sizing by initial buy not exceeding cap
-        # Enforce by notional cap vs total portfolio (approximate using cash+existing position value if needed). Here we cap by per-trade sizing only.
+        # Max position sizing: cap post-trade position value to <= max_position_pct of current equity approx
+        # Approx equity = cash + sum(existing positions valued at use_price for this ticker only here). We at least cap by cash-based equity.
+        equity_approx = max(cash, 0.0)  # conservative approximation
+        cap_value = settings.risk.max_position_pct * max(equity_approx, 1.0)
+        # Enforce: existing position value + this order's notional <= cap
+        existing_value = current_qty * use_price
+        if (existing_value + notional) > cap_value:
+            reasons.append("max_position_pct_breach")
 
     # Max positions count when opening a new name
     opening_new_name = (side == "BUY" and current_qty == 0.0)

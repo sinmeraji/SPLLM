@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -9,18 +10,21 @@ from ..core.config import settings
 from ..core.db import get_db, engine
 from ..models.base import Base
 from ..models.portfolio import Position, KV
-from ..schemas.portfolio import PortfolioOut, PositionOut
+from ..schemas.portfolio import PortfolioOut, PositionOut, PortfolioSummaryOut, PositionDetailOut
 from ..services.sim import ensure_initialized, get_cash, apply_order
+from ..providers.prices import get_latest_trade_price_alpaca
 from .decide import decide_and_execute as decide_fn
 import asyncio
 from ..utils.events import bus
 
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 
 @router.get("/health")
 def health() -> dict:
+    log.debug("/health ok")
     return {"status": "ok"}
 
 
@@ -42,6 +46,44 @@ def get_portfolio(db: Session = Depends(get_db)):
     return PortfolioOut(
         cash=cash,
         positions=[PositionOut(ticker=p.ticker, quantity=p.quantity, avg_cost=p.avg_cost) for p in positions],
+    )
+
+
+@router.get("/portfolio/summary", response_model=PortfolioSummaryOut)
+def get_portfolio_summary(db: Session = Depends(get_db)):
+    ensure_initialized(db, settings.initial_cash_usd)
+    positions = db.query(Position).all()
+    cash = get_cash(db)
+    details: list[PositionDetailOut] = []
+    equity = cash
+    # Compute details with latest price if available
+    for p in positions:
+        latest = get_latest_trade_price_alpaca(p.ticker)
+        price = float(latest) if latest is not None else None
+        use_price = price if price is not None else p.avg_cost
+        value = float(p.quantity) * float(use_price)
+        pnl = (use_price - float(p.avg_cost)) * float(p.quantity)
+        pnl_pct = 0.0 if p.avg_cost == 0 else (use_price / float(p.avg_cost) - 1.0)
+        equity += value
+        details.append(PositionDetailOut(
+            ticker=p.ticker,
+            quantity=p.quantity,
+            avg_cost=p.avg_cost,
+            price=price,
+            value=round(value, 2),
+            weight_pct=0.0,  # fill after equity known
+            pnl=round(pnl, 2),
+            pnl_pct=round(pnl_pct * 100.0, 2),
+        ))
+    # Fill weights
+    for i in range(len(details)):
+        if equity > 0:
+            details[i].weight_pct = round((details[i].value / equity) * 100.0, 2)
+    return PortfolioSummaryOut(
+        cash=round(cash, 2),
+        equity=round(equity, 2),
+        positions_count=len(details),
+        positions=details,
     )
 
 
@@ -84,6 +126,7 @@ async def place_market_order(
         "reason": payload.get("reason", "manual"),
         "accepted": True,
     })
+    log.info("/orders/market order_id=%s ticker=%s side=%s qty=%s", order.id, ticker, side, quantity)
     return {"order_id": order.id}
 
 

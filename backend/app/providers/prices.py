@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 import csv
+import os
+import httpx
 
 
 @dataclass
@@ -92,6 +94,31 @@ class AlpacaPriceProvider(PriceProvider):
 class YahooDailyPriceProvider(PriceProvider):
     def get_minute_bars(self, ticker: str, d: date) -> List[Bar]:
         return []
+
+
+def get_latest_trade_price_alpaca(ticker: str) -> Optional[float]:
+    """
+    Return latest trade price from Alpaca Market Data v2 for the ticker.
+    Requires env ALPACA_KEY_ID and ALPACA_SECRET_KEY. Returns None on error.
+    """
+    key = os.getenv("ALPACA_KEY_ID")
+    secret = os.getenv("ALPACA_SECRET_KEY")
+    if not key or not secret:
+        return None
+    url = f"https://data.alpaca.markets/v2/stocks/{ticker.upper()}/trades/latest"
+    feed = os.getenv("ALPACA_FEED", "iex")
+    headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
+    params = {"feed": feed}
+    try:
+        with httpx.Client(timeout=5) as client:
+            r = client.get(url, params=params, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            trade = data.get("trade") or {}
+            p = trade.get("p")
+            return float(p) if p is not None else None
+    except Exception:
+        return None
 
     def get_five_minute_bars(self, ticker: str, d: date) -> List[Bar]:
         return []

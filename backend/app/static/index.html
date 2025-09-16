@@ -1,4 +1,10 @@
 <!doctype html>
+<!--
+  File: static/index.html
+  Purpose: Minimal UI to explore data, call LLM decisions, and execute proposals.
+  Note: Decide (LLM) now sends the entire universe of tickers to the backend,
+        not just the single selected ticker.
+-->
 <html>
 <head>
   <meta charset="utf-8" />
@@ -31,6 +37,7 @@
     <div class="col">
       <h3>Portfolio</h3>
       <button id="refresh">Refresh</button>
+      <div id="portfolioSummary" style="margin:6px 0;font:14px/1.4 -apple-system, system-ui, Arial"></div>
       <pre id="portfolio"></pre>
       <h3>Place Order (mock)</h3>
       <label>Side
@@ -81,6 +88,7 @@
       sel.innerHTML = '';
       u.tickers.forEach(t=>{ const o=document.createElement('option'); o.text=t; o.value=t; sel.add(o); });
       if(u.tickers.length){ sel.value=u.tickers[0]; }
+      try { window._universeTickers = Array.isArray(u.tickers) ? u.tickers.slice() : []; } catch {}
     }
 
     let chart;
@@ -142,8 +150,14 @@
     }
 
     async function refreshPortfolio(){
-      const p = await api('/portfolio');
-      document.getElementById('portfolio').textContent = JSON.stringify(p, null, 2);
+      const simple = await api('/portfolio');
+      document.getElementById('portfolio').textContent = JSON.stringify(simple, null, 2);
+      try {
+        const s = await api('/portfolio/summary');
+        const el = document.getElementById('portfolioSummary');
+        const rows = s.positions.map(p=> `${p.ticker}: qty=${p.quantity} avg=${p.avg_cost} price=${p.price ?? '-'} value=${p.value} pnl=${p.pnl} (${p.pnl_pct}%) weight=${p.weight_pct}%`);
+        el.textContent = `Equity $${s.equity} | Cash $${s.cash} | Positions ${s.positions_count}\n` + rows.join('\n');
+      } catch {}
     }
 
     async function submitOrder(){
@@ -187,8 +201,10 @@
       try{
         const t = document.getElementById('ticker').value;
         const d = document.getElementById('end').value || new Date().toISOString().slice(0,10);
-        document.getElementById('status').textContent = `Requesting LLM recommendations for ${t} (${d})...`;
-        const r = await fetch('/decide/llm', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tickers:[t], date: d })});
+        const all = Array.isArray(window._universeTickers) ? window._universeTickers : [];
+        const tickers = all.length ? all : [t];
+        document.getElementById('status').textContent = `Requesting LLM recommendations for ${tickers.length} tickers (${d})...`;
+        const r = await fetch('/decide/llm', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tickers, date: d })});
         if(!r.ok){ throw new Error(await r.text()); }
         const j = await r.json();
         renderRecommendations(j.decision_id, j.proposals || []);

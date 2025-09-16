@@ -20,3 +20,6 @@ ui/tauri/src-tauri/dist/
 .DS_Store
 .idea/
 .vscode/
+backend/app/app.db
+configs/env/.env
+configs/env/*.bak

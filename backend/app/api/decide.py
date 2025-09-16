@@ -18,11 +18,13 @@ from sqlalchemy.orm import Session
 from ..core.config import settings
 from ..core.db import get_db
 from ..services.rules import evaluate_order
+from ..providers.prices import get_latest_trade_price_alpaca
 from ..services.sim import apply_order, ensure_initialized, get_cash
 from ..utils.events import bus
-from ..services.context import build_news_context, build_decision_context
+from ..services.context import build_decision_context
 from ..engine.llm import propose_trades, Proposal, get_last_usage
 from ..models.llm import LLMCall, Decision
+from pathlib import Path
 
 
 router = APIRouter()
@@ -121,9 +123,18 @@ async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)
     """
     ensure_initialized(db, settings.initial_cash_usd)
     log.info("/decide/llm called payload=%s", payload)
-    tickers: List[str] = [t.upper() for t in (payload.get('tickers') or [])]
+    # Always expand to full universe for decisions
+    universe_path = Path('configs/universe/tickers.txt')
+    universe: List[str] = []
+    if universe_path.exists():
+        try:
+            universe = [ln.strip().upper() for ln in universe_path.read_text().splitlines() if ln.strip()]
+        except Exception:
+            universe = []
+    req_tickers: List[str] = [t.upper() for t in (payload.get('tickers') or [])]
+    tickers: List[str] = universe if universe else req_tickers
     if not tickers:
-        raise HTTPException(status_code=400, detail='tickers required')
+        raise HTTPException(status_code=400, detail='no tickers available (universe empty and none provided)')
     ts_raw: Optional[str] = payload.get('ts_et')
     ts = datetime.fromisoformat(ts_raw) if ts_raw else datetime.utcnow()
     d_s: Optional[str] = payload.get('date')
@@ -133,6 +144,10 @@ async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)
     ctx = build_decision_context(db, day, time(16, 0), tickers)
     # Call LLM to get proposals
     props: List[Proposal] = propose_trades(ctx)
+    # Fallback: if LLM returns no proposals, use a mock recommendation for now
+    if not props:
+        log.warning("/decide/llm no proposals from LLM; using fallback mock")
+        props = [Proposal(ticker="AAPL", action="BUY", quantity=1.5, thesis="fallback-mock", confidence=0.1)]
     log.info("/decide/llm proposals_count=%d for tickers=%s", len(props), tickers)
     proposals_payload = [getattr(p, '__dict__', dict()) for p in props]
 
@@ -243,7 +258,9 @@ async def execute_decision(decision_id: int, payload: Dict[str, Any], db: Sessio
         ticker = str(p.get("ticker", "")).upper()
         side = str(p.get("action", "")).upper()
         qty = float(p.get("quantity", 0))
-        ref_price = 100.0
+        # Use latest price from provider when available, fallback to 100.0
+        latest = get_latest_trade_price_alpaca(ticker)
+        ref_price = float(latest) if latest is not None else 100.0
         rule = evaluate_order(
             db,
             now_et=ts,

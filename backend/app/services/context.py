@@ -1,3 +1,8 @@
+"""
+Service: decision context assembly.
+- Builds portfolio snapshot, price features (daily + latest intraday), and news snippets/metrics.
+- Used by the LLM decision flow and APIs to provide compact, token-efficient context.
+"""
 from __future__ import annotations
 
 from datetime import date, time, datetime
@@ -7,9 +12,16 @@ from sqlalchemy.orm import Session
 
 from ..providers.news import LocalCacheNewsProvider, NewsItem
 from ..models.news import NewsMetric, NewsRaw
-from ..models.prices import PriceIndicator, PriceIndicatorExt
+from ..models.prices import (
+    PriceIndicator,
+    PriceIndicatorExt,
+    PriceIndicatorIntraday,
+    PriceBar,
+)
 from ..models.portfolio import Position
 from ..services.sim import get_cash
+from ..core.config import settings
+from ..providers.prices import get_latest_trade_price_alpaca
 
 
 def build_news_context_file(d: date, window_end: time, tickers: List[str]) -> Dict[str, Any]:
@@ -64,21 +76,91 @@ def build_news_context_db(db: Session, d: date, window_end: time, tickers: List[
 def _build_portfolio_context(db: Session) -> Dict[str, Any]:
     cash = get_cash(db)
     positions = db.query(Position).all()
-    pos = [{"ticker": p.ticker, "quantity": p.quantity, "avg_cost": p.avg_cost} for p in positions]
-    num_positions = len(pos)
+    items = []
+    equity = float(cash)
+    for p in positions:
+        latest = get_latest_trade_price_alpaca(p.ticker)
+        price = float(latest) if latest is not None else float(p.avg_cost)
+        value = float(p.quantity) * price
+        equity += value
+        items.append({"ticker": p.ticker, "quantity": p.quantity, "avg_cost": p.avg_cost, "price": (latest if latest is not None else None), "value": value})
+    num_positions = len(items)
+    max_position_value_usd = equity * float(settings.risk.max_position_pct)
     return {
         "cash": cash,
+        "equity": round(equity, 2),
+        "max_position_value_usd": round(max_position_value_usd, 2),
         "num_positions": num_positions,
-        "positions": pos,
+        "positions": items,
     }
 
 
 def _build_price_features(db: Session, d: date, tickers: List[str]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for t in tickers:
-        row = db.query(PriceIndicator).filter(PriceIndicator.date == d, PriceIndicator.ticker == t).first()
-        ext = db.query(PriceIndicatorExt).filter(PriceIndicatorExt.date == d, PriceIndicatorExt.ticker == t).first()
+        row = (
+            db.query(PriceIndicator)
+            .filter(PriceIndicator.date == d, PriceIndicator.ticker == t)
+            .first()
+        )
+        ext = (
+            db.query(PriceIndicatorExt)
+            .filter(PriceIndicatorExt.date == d, PriceIndicatorExt.ticker == t)
+            .first()
+        )
+
+        # Orientation for today
+        last_close: Optional[float] = None
+        change_pct_1d: Optional[float] = None
+        try:
+            start_dt = datetime.combine(d, time(0, 0))
+            end_dt = datetime.combine(d, time(23, 59))
+            mb = (
+                db.query(PriceBar)
+                .filter(PriceBar.ticker == t, PriceBar.timeframe == 'min')
+                .filter(PriceBar.ts >= start_dt, PriceBar.ts <= end_dt)
+                .order_by(PriceBar.ts.desc())
+                .first()
+            )
+            if mb:
+                last_close = float(mb.close)
+            pb = (
+                db.query(PriceBar)
+                .filter(PriceBar.ticker == t, PriceBar.timeframe == 'day')
+                .filter(PriceBar.ts < start_dt)
+                .order_by(PriceBar.ts.desc())
+                .first()
+            )
+            if pb and last_close is not None and pb.close:
+                change_pct_1d = (last_close / float(pb.close)) - 1.0
+        except Exception:
+            pass
+
+        # Intraday indicators (latest for today)
+        intraday: Dict[str, Any] = {}
+        try:
+            irow = (
+                db.query(PriceIndicatorIntraday)
+                .filter(PriceIndicatorIntraday.ticker == t)
+                .filter(PriceIndicatorIntraday.ts >= datetime.combine(d, time(0, 0)))
+                .order_by(PriceIndicatorIntraday.ts.desc())
+                .first()
+            )
+            if irow:
+                intraday = {
+                    "rsi_14": getattr(irow, "rsi_14", None),
+                    "ema20": getattr(irow, "ema20", None),
+                    "ema50": getattr(irow, "ema50", None),
+                    "macd": getattr(irow, "macd_line", None),
+                    "macd_signal": getattr(irow, "macd_signal", None),
+                    "macd_hist": getattr(irow, "macd_hist", None),
+                }
+        except Exception:
+            pass
+
         out[t] = {
+            "last_close": last_close,
+            "change_pct_1d": change_pct_1d,
             "r1d": getattr(row, "r1d", None) if row else None,
             "r5d": getattr(row, "r5d", None) if row else None,
             "r20d": getattr(row, "r20d", None) if row else None,
@@ -87,33 +169,41 @@ def _build_price_features(db: Session, d: date, tickers: List[str]) -> Dict[str,
             "rsi_14": getattr(row, "rsi_14", None) if row else None,
             "macd": getattr(row, "macd", None) if row else None,
             "v_zscore_20d": getattr(row, "v_zscore_20d", None) if row else None,
-            "sma_20": getattr(ext, "sma_20", None) if ext else None,
-            "sma_50": getattr(ext, "sma_50", None) if ext else None,
-            "sma_200": getattr(ext, "sma_200", None) if ext else None,
-            "ema_20": getattr(ext, "ema_20", None) if ext else None,
-            "ema_50": getattr(ext, "ema_50", None) if ext else None,
-            "bb_upper": getattr(ext, "bb_upper", None) if ext else None,
-            "bb_lower": getattr(ext, "bb_lower", None) if ext else None,
+            "sma20": getattr(ext, "sma20", None) if ext else None,
+            "sma50": getattr(ext, "sma50", None) if ext else None,
+            "sma200": getattr(ext, "sma200", None) if ext else None,
+            "ema20": getattr(ext, "ema20", None) if ext else None,
+            "ema50": getattr(ext, "ema50", None) if ext else None,
+            "bb_upper20": getattr(ext, "bb_upper20", None) if ext else None,
+            "bb_lower20": getattr(ext, "bb_lower20", None) if ext else None,
             "macd_signal": getattr(ext, "macd_signal", None) if ext else None,
             "macd_hist": getattr(ext, "macd_hist", None) if ext else None,
+            "intraday": intraday,
         }
     return out
 
 
-def _build_news_metrics(db: Session, d: date, tickers: List[str]) -> List[Dict[str, Any]]:
+def _build_news_metrics(
+    db: Session, d: date, tickers: List[str], allowed_windows: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
     q = db.query(NewsMetric).filter(NewsMetric.date == d)
     if tickers:
         q = q.filter(NewsMetric.ticker.in_(tickers))
+    if allowed_windows:
+        q = q.filter(NewsMetric.window.in_(allowed_windows))
     rows = q.all()
-    return [{
-        "ticker": r.ticker,
-        "type": r.type,
-        "window": r.window,
-        "count": r.count,
-        "sentiment_avg": r.sentiment_avg,
-        "novelty": r.novelty,
-        "reliability": r.reliability,
-    } for r in rows]
+    return [
+        {
+            "ticker": r.ticker,
+            "type": r.type,
+            "window": r.window,
+            "count": r.count,
+            "sentiment_avg": r.sentiment_avg,
+            "novelty": r.novelty,
+            "reliability": r.reliability,
+        }
+        for r in rows
+    ]
 
 
 def build_decision_context(db: Session, d: date, window_end: time, tickers: List[str]) -> Dict[str, Any]:
@@ -122,8 +212,11 @@ def build_decision_context(db: Session, d: date, window_end: time, tickers: List
     """
     tickers_u = [t.upper() for t in tickers]
     portfolio = _build_portfolio_context(db)
+    # Decide intraday vs EOD windows for news metrics
+    intraday = window_end < time(16, 0)
+    allowed_windows = ["1d", "3d"] if intraday else ["1d", "3d", "7d"]
     prices = _build_price_features(db, d, tickers_u)
-    news_metrics = _build_news_metrics(db, d, tickers_u)
+    news_metrics = _build_news_metrics(db, d, tickers_u, allowed_windows=allowed_windows)
     news_briefs = build_news_context_db(db, d, window_end, tickers_u)
     if not news_briefs["news"]:
         # fallback to file cache if DB empty
@@ -134,8 +227,17 @@ def build_decision_context(db: Session, d: date, window_end: time, tickers: List
         "stops_targets": {"default_stop_frac": 0.08, "default_target_frac": 0.12},
         "min_order_usd": 1000,
     }
-    return {
-        "as_of": datetime.combine(d, window_end).isoformat(),
+    as_of = datetime.combine(d, window_end).isoformat()
+
+    # Optional small market context (QQQ)
+    market: Dict[str, Any] = {}
+    if "QQQ" not in tickers_u:
+        qqq = _build_price_features(db, d, ["QQQ"]).get("QQQ")
+        if qqq:
+            market["QQQ"] = {k: v for k, v in qqq.items() if k in ("change_pct_1d", "rsi_14", "vol_20d", "macd")}
+
+    ctx = {
+        "as_of": as_of,
         "tickers": tickers_u,
         "policy": policy,
         "portfolio": portfolio,
@@ -143,4 +245,21 @@ def build_decision_context(db: Session, d: date, window_end: time, tickers: List
         "news_metrics": news_metrics,
         "news": news_briefs,
     }
+    if market:
+        ctx["market"] = market
+
+    # prune nulls and round floats to reduce tokens
+    def _round(v: Any) -> Any:
+        if isinstance(v, float):
+            return round(v, 4)
+        return v
+
+    def _prune(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {k: _prune(v) for k, v in obj.items() if v is not None and v != {}}
+        if isinstance(obj, list):
+            return [_prune(x) for x in obj if x is not None]
+        return _round(obj)
+
+    return _prune(ctx)
 
