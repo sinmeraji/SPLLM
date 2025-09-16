@@ -25,6 +25,7 @@ from ..services.context import build_decision_context
 from ..engine.llm import propose_trades, Proposal, get_last_usage
 from ..models.llm import LLMCall, Decision
 from pathlib import Path
+from ..utils.logging import write_jsonl
 
 
 router = APIRouter()
@@ -151,6 +152,20 @@ async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)
     log.info("/decide/llm proposals_count=%d for tickers=%s", len(props), tickers)
     proposals_payload = [getattr(p, '__dict__', dict()) for p in props]
 
+    # Write request/response summary to JSONL for audit
+    try:
+        write_jsonl(Path('logs/decisions.jsonl').resolve(), {
+            "ts": ts.isoformat(),
+            "route": "/decide/llm",
+            "tickers_count": len(tickers),
+            "tickers": tickers[:10],
+            "as_of": day.isoformat(),
+            "proposals_count": len(proposals_payload),
+            "proposals": proposals_payload,
+        })
+    except Exception:
+        pass
+
     # Persist LLMCall and Decision (pending; no execution here)
     req_json = json.dumps(ctx, separators=(",", ":"))
     resp_json = json.dumps({"proposals": proposals_payload}, separators=(",", ":"))
@@ -274,6 +289,18 @@ async def execute_decision(decision_id: int, payload: Dict[str, Any], db: Sessio
             last_exit_time_by_ticker={},
         )
         if not rule.accepted:
+            try:
+                write_jsonl(Path('logs/decisions.jsonl').resolve(), {
+                    "ts": ts.isoformat(),
+                    "route": f"/decisions/{decision_id}/execute",
+                    "ticker": ticker,
+                    "side": side,
+                    "qty": qty,
+                    "accepted": False,
+                    "reasons": rule.reasons,
+                })
+            except Exception:
+                pass
             await bus.publish({
                 "type": "decision",
                 "ts": ts.isoformat(),
@@ -301,6 +328,19 @@ async def execute_decision(decision_id: int, payload: Dict[str, Any], db: Sessio
         day_orders_count += 1
         cash = get_cash(db)
         executed.append({"ticker": ticker, "side": side, "order_id": order.id, "qty": rule.adjusted_quantity, "price": ref_price})
+        try:
+            write_jsonl(Path('logs/decisions.jsonl').resolve(), {
+                "ts": ts.isoformat(),
+                "route": f"/decisions/{decision_id}/execute",
+                "ticker": ticker,
+                "side": side,
+                "qty": rule.adjusted_quantity,
+                "price": ref_price,
+                "order_id": order.id,
+                "accepted": True,
+            })
+        except Exception:
+            pass
         await bus.publish({
             "type": "trade",
             "ts": ts.isoformat(),

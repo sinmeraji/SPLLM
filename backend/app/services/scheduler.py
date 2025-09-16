@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from ..core.db import SessionLocal
-from ..services.prices_ingest import ingest_provider_bars, enforce_retention
+from ..services.prices_ingest import ingest_provider_bars, ingest_provider_bars_multi, enforce_retention
 from ..providers.news import GdeltProvider, EdgarProvider, EdgarSubmissionsProvider
 from ..services.news_db import upsert_news_items_to_db, compute_metrics_for_date
 from ..services.features import (
@@ -58,9 +58,14 @@ async def minute_job() -> None:
     except Exception:
         pass
     with SessionLocal() as db:
+        try:
+            # Batch fetch minute bars for all tickers
+            ingest_provider_bars_multi(db, provider="alpaca", tickers=tickers, d=d_et, timeframe="minute", skip_if_exists=False)
+        except Exception:
+            pass
+        # Recompute intraday indicators per ticker
         for t in tickers:
             try:
-                ingest_provider_bars(db, provider="alpaca", ticker=t, d=d_et, timeframe="minute", skip_if_exists=False)
                 recompute_intraday_indicators_last_90d(db, ticker=t, as_of=d_et)
             except Exception:
                 continue
@@ -78,12 +83,11 @@ async def eod_job() -> None:
     except Exception:
         pass
     with SessionLocal() as db:
+        try:
+            ingest_provider_bars_multi(db, provider="alpaca", tickers=tickers, d=d_et, timeframe="day", skip_if_exists=False)
+        except Exception:
+            pass
         for t in tickers:
-            try:
-                # Ensure daily bar for the day exists before computing indicators
-                ingest_provider_bars(db, provider="alpaca", ticker=t, d=d_et, timeframe="day", skip_if_exists=False)
-            except Exception:
-                pass
             try:
                 recompute_indicators_for_date(db, ticker=t, d=d_et)
             except Exception:

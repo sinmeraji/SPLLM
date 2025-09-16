@@ -34,7 +34,7 @@ if str(ROOT) not in sys.path:
 
 from backend.app.core.db import SessionLocal
 from backend.app.utils.logging import setup_logging
-from backend.app.services.prices_ingest import ingest_provider_bars, enforce_retention
+from backend.app.services.prices_ingest import ingest_provider_bars, enforce_retention, synthesize_day_from_minutes
 from backend.app.services.features import recompute_indicators_for_date
 from backend.app.providers.news import GdeltProvider, EdgarProvider, EdgarSubmissionsProvider
 from backend.app.services.news_db import upsert_news_items_to_db, compute_metrics_for_date
@@ -97,7 +97,12 @@ def main() -> None:
         for t in tickers:
             try:
                 added = ingest_provider_bars(db, provider="alpaca", ticker=t, d=d_et, timeframe="day", skip_if_exists=False)
-                log.info("prices day added ticker=%s date=%s rows=%s", t, d_et.isoformat(), added)
+                if added == 0:
+                    # Fallback: synthesize from minutes if provider returned nothing
+                    synth = synthesize_day_from_minutes(db, ticker=t, d=d_et)
+                    log.info("prices day added ticker=%s date=%s rows=%s synth=%s", t, d_et.isoformat(), added, synth)
+                else:
+                    log.info("prices day added ticker=%s date=%s rows=%s", t, d_et.isoformat(), added)
             except Exception as e:
                 log.warning("prices day ingest failed ticker=%s date=%s err=%s", t, d_et.isoformat(), e)
             try:

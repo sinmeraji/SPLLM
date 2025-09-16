@@ -1,7 +1,13 @@
 from __future__ import annotations
+"""
+Service: portfolio state and simple execution simulation.
+- Manages cash KV, initializes portfolio, and applies market orders with slippage/commission.
+- Central place to log order application details for audit (fill, notional, pos/cash deltas).
+"""
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+import logging
 
 from ..models.portfolio import Position, Order, KV
 
@@ -42,6 +48,7 @@ def apply_order(
     reason: str,
 ):
     """Apply an execution to portfolio state and record order."""
+    log = logging.getLogger(__name__)
     slip_mult = 1.0 + (slippage_bps / 10_000.0) if side == "BUY" else 1.0 - (slippage_bps / 10_000.0)
     fill_price = price * slip_mult
 
@@ -50,7 +57,10 @@ def apply_order(
         pos = Position(ticker=ticker, quantity=0.0, avg_cost=0.0)
         db.add(pos)
 
-    cash = get_cash(db)
+    cash_before = get_cash(db)
+    qty_before = float(pos.quantity)
+    avg_before = float(pos.avg_cost)
+    cash = cash_before
 
     if side == "BUY":
         notional = quantity * fill_price
@@ -82,4 +92,27 @@ def apply_order(
 
     set_cash(db, cash)
     db.commit()
+    try:
+        log.info(
+            "order applied id=%s ts=%s ticker=%s side=%s qty=%.4f ref_price=%.4f fill_price=%.4f slip_bps=%.1f commission=%.2f notional=%.2f pos_qty: %.4f->%.4f avg_cost: %.4f->%.4f cash: %.2f->%.2f reason=%s",
+            order.id,
+            getattr(order, "ts_et", None),
+            ticker,
+            side,
+            quantity,
+            price,
+            fill_price,
+            slippage_bps,
+            commission_usd,
+            (abs(quantity) * fill_price),
+            qty_before,
+            float(pos.quantity),
+            avg_before,
+            float(pos.avg_cost),
+            cash_before,
+            float(cash),
+            reason,
+        )
+    except Exception:
+        pass
     return order

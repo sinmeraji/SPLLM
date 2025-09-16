@@ -30,7 +30,6 @@
       <label>End <input type="date" id="end" /></label>
       <button id="load">Load</button>
       <button id="decide">Decide (LLM)</button>
-      <button id="runBacktest">Run Backtest</button>
       <canvas id="chart" height="140"></canvas>
       <div id="coverage" style="margin-top:8px;font:12px monospace;color:#555"></div>
     </div>
@@ -39,12 +38,15 @@
       <button id="refresh">Refresh</button>
       <div id="portfolioSummary" style="margin:6px 0;font:14px/1.4 -apple-system, system-ui, Arial"></div>
       <pre id="portfolio"></pre>
-      <h3>Place Order (mock)</h3>
+      <h3>Place Order</h3>
+      <label>Ticker
+        <select id="orderTicker"></select>
+      </label>
+      <div id="livePrice" style="margin:4px 0;color:#333;font:13px -apple-system, system-ui, Arial">Price: -</div>
       <label>Side
         <select id="side"><option>BUY</option><option>SELL</option></select>
       </label>
       <label>Quantity <input id="qty" type="number" step="0.01" value="1"/></label>
-      <label>Ref Price <input id="price" type="number" step="0.01" value="100"/></label>
       <button id="submit">Submit</button>
       <pre id="orderResult"></pre>
     </div>
@@ -73,14 +75,15 @@
       if (el) el.textContent = `Promise error: ${e.reason && e.reason.message ? e.reason.message : e.reason}`;
     });
     const api = async (p, opts={})=> {
-  const { timeoutMs } = opts || {};
-  const ctrl = typeof AbortController !== 'undefined' && timeoutMs ? new AbortController() : null;
-  const t = timeoutMs && ctrl ? setTimeout(()=> ctrl.abort(), timeoutMs) : null;
-  const r = await fetch(p, { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined });
-  if (t) clearTimeout(t);
-  if (!r.ok) { throw new Error(await r.text()); }
-  return r.json();
-};
+      const { timeoutMs } = opts || {};
+      const ctrl = typeof AbortController !== 'undefined' && timeoutMs ? new AbortController() : null;
+      const t = timeoutMs && ctrl ? setTimeout(()=> ctrl.abort(), timeoutMs) : null;
+      console.debug('[UI] fetch', p);
+      const r = await fetch(p, { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined });
+      if (t) clearTimeout(t);
+      if (!r.ok) { throw new Error(await r.text()); }
+      return r.json();
+    };
 
     async function loadUniverse(){
       const u = await api('/universe');
@@ -89,22 +92,32 @@
       u.tickers.forEach(t=>{ const o=document.createElement('option'); o.text=t; o.value=t; sel.add(o); });
       if(u.tickers.length){ sel.value=u.tickers[0]; }
       try { window._universeTickers = Array.isArray(u.tickers) ? u.tickers.slice() : []; } catch {}
+      // Populate order ticker list
+      const oSel = document.getElementById('orderTicker');
+      oSel.innerHTML = '';
+      (window._universeTickers || []).forEach(t=>{ const o=document.createElement('option'); o.text=t; o.value=t; oSel.add(o); });
+      if (window._universeTickers && window._universeTickers.length){ oSel.value = window._universeTickers[0]; }
+      updateLivePrice();
     }
 
     let chart;
     async function loadBars(){
+      console.debug('[UI] loadBars invoked');
       const status = document.getElementById('status');
       const t = document.getElementById('ticker').value;
       const start = document.getElementById('start').value;
       const end = document.getElementById('end').value;
       const rangeLabel = (start && end) ? `${start}..${end}` : '';
-      if(!start || !end){ status.textContent = "Pick both Start and End dates"; return; }
+      if(!start || !end){ status.textContent = "Pick both Start and End dates"; console.warn('[UI] missing dates', {start,end}); return; }
       status.textContent = `Loading ${t} ${rangeLabel}...`;
       try {
-        const data = await api(`/prices/range/${t}?start=${start}&end=${end}`);
+        const url = `/prices/range/${t}?start=${start}&end=${end}`;
+        console.debug('[UI] GET', url);
+        const data = await api(url);
         if (!data.bars || data.bars.length === 0){
           if (chart) { chart.destroy(); chart = undefined; }
           status.textContent = `No data for ${t} ${rangeLabel}`.trim();
+          console.info('[UI] no bars', {ticker:t, start, end});
           return;
         }
         const raw = data.bars.map(b=> ({ x: new Date(b.ts), y: b.close }));
@@ -144,8 +157,10 @@
           }
         });
         status.textContent = `Loaded ${t} ${rangeLabel} — bars: ${data.bars.length}`.trim();
+        console.debug('[UI] loaded bars', {ticker:t, count:data.bars.length});
       } catch (e) {
         status.textContent = `Error loading ${t} ${rangeLabel}: ${e}`.trim();
+        console.error('[UI] loadBars error', e);
       }
     }
 
@@ -160,19 +175,60 @@
       } catch {}
     }
 
-    async function submitOrder(){
-      const ts = new Date().toISOString();
-      const ticker = document.getElementById('ticker').value;
-      const side = document.getElementById('side').value;
-      const quantity = parseFloat(document.getElementById('qty').value);
-      const price = parseFloat(document.getElementById('price').value);
-      const res = await fetch('/orders/market', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ts_et: ts, ticker, side, quantity, price, reason: 'mock-ui' })});
-      const j = await res.json();
-      document.getElementById('orderResult').textContent = JSON.stringify(j, null, 2);
-      await refreshPortfolio();
+    async function updateLivePrice(){
+      const t = document.getElementById('orderTicker').value;
+      try{
+        const j = await api(`/prices/latest/${t}`);
+        document.getElementById('livePrice').textContent = `Price: ${j.price !== null ? `$${j.price.toFixed(2)}` : '-'}`;
+        return j.price;
+      } catch(e){
+        document.getElementById('livePrice').textContent = 'Price: -';
+        return null;
+      }
     }
 
-        document.getElementById('refresh').onclick = refreshPortfolio;
+    let _orderSubmitting = false;
+    async function submitOrder(){
+      if (_orderSubmitting) { console.debug('[UI] submit ignored: already submitting'); return; }
+      _orderSubmitting = true;
+      const submitBtn = document.getElementById('submit');
+      if (submitBtn) submitBtn.disabled = true;
+      const ts = new Date().toISOString();
+      const ticker = document.getElementById('orderTicker').value;
+      const side = document.getElementById('side').value;
+      const quantity = parseFloat(document.getElementById('qty').value);
+      const live = await updateLivePrice();
+      const price = (live !== null && !Number.isNaN(live)) ? live : 100.0;
+      try{
+        // 1) Preview
+        const previewRes = await fetch('/orders/preview', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ticker, side, quantity, price })});
+        const preview = await previewRes.json();
+        const warn = (preview.reasons && preview.reasons.length) ? (`\nWarnings: ${preview.reasons.map(r=>`${r}${preview.reason_descriptions&&preview.reason_descriptions[r]?` — ${preview.reason_descriptions[r]}`:''}`).join('\n          ')}`) : '';
+        const summary = `About to ${side} ${quantity} ${ticker} at ~$${price.toFixed(2)} (notional $${preview.notional})` +
+                        `\nCash before: $${preview.cash_before}  -> after: $${preview.cash_after}` +
+                        `\nCap value: $${preview.cap_value}  Existing value: $${preview.existing_value}` +
+                        `\nMin order: $${preview.min_order_usd}  Min cash pct: ${(preview.min_cash_pct*100).toFixed(1)}%` + warn +
+                        `\n\nProceed?`;
+        let ok = window.confirm(summary);
+        if(!ok){ document.getElementById('orderResult').textContent = 'Cancelled.'; return; }
+        if (!preview.accepted){
+          const force = window.confirm('This order is blocked by rules. Override and execute anyway?');
+          if (!force){ document.getElementById('orderResult').textContent = `Blocked by rules: ${preview.reasons.join(', ')}`; return; }
+        }
+        // 2) Place order
+        const res = await fetch('/orders/market', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ts_et: ts, ticker, side, quantity, price, reason: 'manual-ui' })});
+        const j = await res.json();
+        document.getElementById('orderResult').textContent = JSON.stringify(j, null, 2);
+        await refreshPortfolio();
+      } catch(e){
+        document.getElementById('orderResult').textContent = `Order error: ${e}`;
+      } finally {
+        _orderSubmitting = false;
+        if (submitBtn) submitBtn.disabled = false;
+      }
+    }
+
+    document.getElementById('refresh').onclick = refreshPortfolio;
     document.getElementById('submit').onclick = submitOrder;
     document.getElementById('load').onclick = async ()=>{ await loadBars(); };
     let lastDecisionId = null;
@@ -224,20 +280,11 @@
         await refreshPortfolio();
       } catch(e){ document.getElementById('status').textContent = `Execute error: ${e}`; }
     };
-    document.getElementById('runBacktest').onclick = async ()=>{
-      try{
-        const start = document.getElementById('start').value;
-        const end = document.getElementById('end').value;
-        document.getElementById('status').textContent = `Starting backtest ${start}..${end}...`;
-        const r = await fetch('/backtest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ start, end })});
-        if(!r.ok){ throw new Error(await r.text()); }
-        document.getElementById('status').textContent = `Backtest started.`;
-      } catch(e){ document.getElementById('status').textContent = `Backtest error: ${e}`; }
-    };
+    // backtest removed
 
-    
     document.getElementById('ticker').onchange = async ()=>{
       const t = document.getElementById('ticker').value;
+      console.debug('[UI] ticker changed', t);
       document.getElementById('status').textContent = `Loading dates for ${t}...`;
       const r = await api(`/prices/available-dates/${t}`);
       const startEl = document.getElementById('start');
@@ -256,6 +303,7 @@
     document.getElementById('start').onchange = async ()=>{ await loadBars(); };
     document.getElementById('end').onchange = async ()=>{ await loadBars(); };
 
+    document.getElementById('orderTicker').onchange = updateLivePrice;
 
     loadUniverse().then(async ()=>{ document.getElementById('ticker').onchange(); }).then(refreshPortfolio);
 

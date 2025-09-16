@@ -56,6 +56,26 @@ def setup_logging() -> None:
         console.setLevel(level)
         root.addHandler(console)
 
+    # Ensure key third-party/uvicorn loggers propagate to root so they land in our file
+    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        try:
+            lg = logging.getLogger(logger_name)
+            lg.setLevel(level)
+            # Replace any pre-set handlers to prevent duplicate/console-only logging
+            for h in list(lg.handlers):
+                lg.removeHandler(h)
+            lg.propagate = True
+        except Exception:
+            continue
+
+    # Optional: make httpx/httpcore follow the same level
+    for logger_name in ("httpx", "httpcore"):
+        try:
+            lg = logging.getLogger(logger_name)
+            lg.setLevel(level)
+        except Exception:
+            continue
+
     logging.getLogger(__name__).info(
         "Logging initialized level=%s file=%s console=%s", level_name, log_file, to_console
     )

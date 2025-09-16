@@ -16,6 +16,7 @@ from sqlalchemy import text
 from ..core.db import get_db
 from ..services.prices_ingest import ingest_csv_bars
 from ..models.prices import PriceBar
+from ..providers.prices import get_latest_trade_price_alpaca
 
 router = APIRouter()
 
@@ -113,6 +114,16 @@ def get_prices_range(ticker: str, start: str, end: str, db: Session = Depends(ge
         'volume': b.volume,
     } for b in bars]
     return {'ticker': ticker.upper(), 'start': start, 'end': end, 'bars': out}
+
+
+@router.get('/prices/latest/{ticker}')
+def get_latest_price(ticker: str) -> dict:
+    """Return the latest trade price from provider (Alpaca), if available."""
+    latest = get_latest_trade_price_alpaca(ticker.upper())
+    if latest is None:
+        # Keep shape predictable; client can decide how to handle null
+        return {"ticker": ticker.upper(), "price": None}
+    return {"ticker": ticker.upper(), "price": float(latest)}
 
 
 @router.post('/prices/ingest/{iso_date}')

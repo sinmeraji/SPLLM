@@ -23,13 +23,20 @@ export SIM_CONFIG=${SIM_CONFIG:-./configs/sim_config.yaml}
 mkdir -p "$DIR/logs"
 
 echo "Starting backend (uvicorn)..."
-nohup uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload > "$DIR/logs/backend_server.log" 2>&1 &
+# Route uvicorn output to backend_app.log to avoid duplicate log files;
+# pass debug level explicitly and use --access-log so access entries are emitted
+export LOG_LEVEL=${LOG_LEVEL:-DEBUG}
+export LOG_TO_CONSOLE=${LOG_TO_CONSOLE:-0}
+export LOG_FILE=${LOG_FILE:-"$DIR/logs/backend_app.log"}
+nohup uvicorn backend.app.main:app \
+  --host 127.0.0.1 --port 8000 --reload \
+  --log-level debug --access-log >> "$DIR/logs/backend_app.log" 2>&1 &
 BACK_PID=$!
 echo "Backend PID: $BACK_PID"
 echo $BACK_PID > /tmp/spllm_backend.pid
 
 echo "Starting sqlite-web..."
-nohup "$DIR/backend/.venv/bin/sqlite_web" "$DIR/backend/app/app.db" --host 127.0.0.1 --port 8081 > "$DIR/logs/sqlite_web.log" 2>&1 &
+nohup "$DIR/backend/.venv/bin/sqlite_web" "$DIR/backend/app/app.db" --host 127.0.0.1 --port 8081 >> "$DIR/logs/sqlite_web.log" 2>&1 &
 SQL_PID=$!
 echo "SQLite-web PID: $SQL_PID"
 echo $SQL_PID > /tmp/spllm_sqlite.pid

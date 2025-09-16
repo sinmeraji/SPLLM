@@ -58,6 +58,8 @@ def _call_chat_completions(api_key: str, model: str, decision_prompt: str, user_
         payload["temperature"] = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     timeout_secs = float(os.getenv("OPENAI_TIMEOUT_SECS", "180"))
     with httpx.Client(timeout=timeout_secs) as client:
+        import time
+        t0 = time.perf_counter()
         r = client.post(
             "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -72,7 +74,17 @@ def _call_chat_completions(api_key: str, model: str, decision_prompt: str, user_
                 pass
             return None
         data = r.json()
+        try:
+            proc_ms = r.headers.get("openai-processing-ms") or r.headers.get("x-openai-processing-ms")
+            dt = (time.perf_counter() - t0) * 1000.0
+            log.info("LLM chat.completions processing_ms=%s roundtrip_ms=%.0f", str(proc_ms), dt)
+        except Exception:
+            pass
         content = data["choices"][0]["message"]["content"]
+        try:
+            log.debug("LLM raw content (chat) first_1000=\n%s", content[:1000])
+        except Exception:
+            pass
         obj = _parse_json_content(content)
         proposals_raw = (obj.get("proposals") or [])
         out: List[Proposal] = []
@@ -100,6 +112,10 @@ def _call_chat_completions(api_key: str, model: str, decision_prompt: str, user_
             log.info("LLM usage prompt_tokens=%s completion_tokens=%s", _last_usage.get("prompt_tokens"), _last_usage.get("completion_tokens"))
         except Exception:
             pass
+        try:
+            log.debug("LLM parsed proposals n=%d sample=%s", len(out), [getattr(p, '__dict__', {}) for p in out[:3]])
+        except Exception:
+            pass
         return out
 
 
@@ -118,6 +134,8 @@ def _call_responses(api_key: str, model: str, decision_prompt: str, user_content
         payload["temperature"] = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     timeout_secs = float(os.getenv("OPENAI_TIMEOUT_SECS", "180"))
     with httpx.Client(timeout=timeout_secs) as client:
+        import time
+        t0 = time.perf_counter()
         r = client.post(
             "https://api.openai.com/v1/responses",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -132,6 +150,12 @@ def _call_responses(api_key: str, model: str, decision_prompt: str, user_content
                 pass
             return None
         data = r.json()
+        try:
+            proc_ms = r.headers.get("openai-processing-ms") or r.headers.get("x-openai-processing-ms")
+            dt = (time.perf_counter() - t0) * 1000.0
+            log.info("LLM responses processing_ms=%s roundtrip_ms=%.0f", str(proc_ms), dt)
+        except Exception:
+            pass
         # Try multiple shapes used by responses API
         text: Optional[str] = None
         try:
@@ -161,6 +185,10 @@ def _call_responses(api_key: str, model: str, decision_prompt: str, user_content
             except Exception:
                 pass
             return None
+        try:
+            log.debug("LLM raw content (responses) first_1000=\n%s", text[:1000])
+        except Exception:
+            pass
         obj = _parse_json_content(text)
         proposals_raw = (obj.get("proposals") or [])
         out: List[Proposal] = []
@@ -185,6 +213,10 @@ def _call_responses(api_key: str, model: str, decision_prompt: str, user_content
         try:
             global _last_usage
             _last_usage = data.get("usage", {}) or {}
+        except Exception:
+            pass
+        try:
+            log.debug("LLM parsed proposals n=%d sample=%s", len(out), [getattr(p, '__dict__', {}) for p in out[:3]])
         except Exception:
             pass
         return out
