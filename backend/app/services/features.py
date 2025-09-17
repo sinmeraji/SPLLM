@@ -91,11 +91,13 @@ def _rsi(prices: List[float], n: int = 14) -> float:
     return 100.0 - (100.0 / (1 + rs))
 
 
-def recompute_intraday_indicators_last_90d(db: Session, *, ticker: str, as_of: date) -> int:
-    """Compute intraday indicators (RSI-14, EMA20/50, MACD) for last 90 calendar days of minute bars.
-    Upsert into price_indicators_intraday keyed by (ticker, ts).
+def recompute_intraday_indicators_last_30d_5m(db: Session, *, ticker: str, as_of: date) -> int:
+    """Compute intraday indicators over 5-minute bars for the last 30 calendar days as-of `as_of`.
+    - Aggregates 1-minute bars into 5-minute buckets (uses last close in each bucket)
+    - Computes RSI-14, EMA20/50, MACD (line/signal/hist) on 5-minute closes
+    - Upserts into price_indicators_intraday keyed by (ticker, ts=bucket_end_ts)
     """
-    start_dt = datetime.combine(as_of - timedelta(days=90), datetime.min.time())
+    start_dt = datetime.combine(as_of - timedelta(days=30), datetime.min.time())
     end_dt = datetime.combine(as_of, datetime.max.time())
     bars: List[PriceBar] = (
         db.query(PriceBar)
@@ -108,27 +110,41 @@ def recompute_intraday_indicators_last_90d(db: Session, *, ticker: str, as_of: d
         .order_by(PriceBar.ts.asc())
         .all()
     )
+    # Downsample to 5-minute buckets by using the last close within each bucket
+    bucket_to_bar: Dict[int, PriceBar] = {}
+    five_minutes_seconds = 5 * 60
+    for b in bars:
+        # ts is naive datetime; treat as epoch seconds for bucketing
+        epoch = int(b.ts.timestamp())
+        bucket = (epoch // five_minutes_seconds) * five_minutes_seconds
+        # keep last seen bar in the bucket (ascending order ensures overwrite gives last)
+        bucket_to_bar[bucket] = b
+    # Build sorted 5-min series
+    buckets_sorted = sorted(bucket_to_bar.keys())
     closes: List[float] = []
     out = 0
     ema20_val = 0.0
     ema50_val = 0.0
     macd_signal = 0.0
-    for b in bars:
-        closes.append(b.close)
+    for key in buckets_sorted:
+        last_bar = bucket_to_bar[key]
+        closes.append(last_bar.close)
         rsi = _rsi(closes, 14)
-        ema20_val = _ema(closes[-60:], 20)
+        # windows sized in 5-min bars; keep ample history slices
+        ema20_val = _ema(closes[-60:], 20)   # use up to last 60 points for stability
         ema50_val = _ema(closes[-100:], 50)
         ema12 = _ema(closes[-40:], 12)
         ema26 = _ema(closes[-60:], 26)
         macd_line = ema12 - ema26
         macd_signal = 0.8 * macd_signal + 0.2 * macd_line
         macd_hist = macd_line - macd_signal
+        ts_bucket = last_bar.ts  # timestamp of the last 1-min bar in the 5-min bucket
         row = db.query(PriceIndicatorIntraday).filter(
             PriceIndicatorIntraday.ticker == ticker.upper(),
-            PriceIndicatorIntraday.ts == b.ts,
+            PriceIndicatorIntraday.ts == ts_bucket,
         ).one_or_none()
         if not row:
-            row = PriceIndicatorIntraday(ticker=ticker.upper(), ts=b.ts)
+            row = PriceIndicatorIntraday(ticker=ticker.upper(), ts=ts_bucket)
             db.add(row)
         row.rsi_14 = rsi
         row.ema20 = ema20_val

@@ -49,7 +49,7 @@ from backend.app.services.prices_ingest import (
 )
 from backend.app.services.features import (
     recompute_indicators_for_date,
-    recompute_intraday_indicators_last_90d,
+    recompute_intraday_indicators_last_30d_5m,
 )
 from backend.app.providers.news import GdeltProvider, EdgarProvider, EdgarSubmissionsProvider
 from backend.app.services.news_db import upsert_news_items_to_db, compute_metrics_for_date
@@ -168,11 +168,11 @@ def main() -> None:
                 except Exception as e:
                     log.warning("indicators daily failed ticker=%s date=%s err=%s", t, d_et.isoformat(), e)
 
-            # 3) Recompute intraday indicators with 90d lookback as-of this day
+            # 3) Recompute intraday indicators with 30d lookback on 5-min buckets as-of this day
             for t in tickers:
                 try:
-                    nrows = recompute_intraday_indicators_last_90d(db, ticker=t, as_of=d_et)
-                    log.info("indicators intraday ticker=%s as_of=%s rows=%s", t, d_et.isoformat(), nrows)
+                    nrows = recompute_intraday_indicators_last_30d_5m(db, ticker=t, as_of=d_et)
+                    log.info("indicators intraday(5m/30d) ticker=%s as_of=%s rows=%s", t, d_et.isoformat(), nrows)
                 except Exception as e:
                     log.warning("indicators intraday failed ticker=%s as_of=%s err=%s", t, d_et.isoformat(), e)
 

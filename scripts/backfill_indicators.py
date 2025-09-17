@@ -26,7 +26,7 @@ from datetime import date, timedelta
 from backend.app.core.db import SessionLocal
 from backend.app.services.features import (
     recompute_indicators_for_date,
-    recompute_intraday_indicators_last_90d,
+    recompute_intraday_indicators_last_30d_5m,
 )
 
 
@@ -84,14 +84,14 @@ def main() -> None:
             print(f"DONE daily_total={total_daily}", flush=True)
 
         if not skip_intra:
-            print(f"START intraday as_of={end_d} tickers={len(tickers)}", flush=True)
+            print(f"START intraday(5m/30d) as_of={end_d} tickers={len(tickers)}", flush=True)
             total_intra = 0
             for t in tickers:
-                print(f"intraday {t} last90d start", flush=True)
-                n = recompute_intraday_indicators_last_90d(db, ticker=t, as_of=end_d)
+                print(f"intraday {t} last30d_5m start", flush=True)
+                n = recompute_intraday_indicators_last_30d_5m(db, ticker=t, as_of=end_d)
                 total_intra += n
-                print(f"intraday {t} last90d +{n}", flush=True)
-            print(f"DONE intraday_total={total_intra}", flush=True)
+                print(f"intraday {t} last30d_5m +{n}", flush=True)
+            print(f"DONE intraday_total(5m/30d)={total_intra}", flush=True)
 
 
 if __name__ == "__main__":
