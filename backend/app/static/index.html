@@ -4,6 +4,7 @@
   Purpose: Minimal UI to explore data, call LLM decisions, and execute proposals.
   Note: Decide (LLM) now sends the entire universe of tickers to the backend,
         not just the single selected ticker.
+        UI refreshed with a top status bar and improved layout/colors.
 -->
 <html>
 <head>
@@ -13,15 +14,67 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
   <style>
-    body { font-family: -apple-system, system-ui, Arial; margin: 16px; }
-    .row { display: flex; gap: 16px; }
-    .col { flex: 1; }
-    label { display:block; margin-top:8px; }
-    pre { background:#f6f6f6; padding:8px; }
+    :root {
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --line: #e2e8f0;
+      --accent: #2563eb;
+      --accent-2: #10b981;
+      --warn: #f59e0b;
+    }
+    body {
+      font-family: -apple-system, system-ui, Arial;
+      margin: 0;
+      padding: 0 16px 24px 16px;
+      background: var(--bg);
+      color: var(--text);
+    }
+    h1 { margin: 16px 0 8px 0; font-size: 20px; color: var(--text); }
+    .statusbar {
+      position: sticky; top: 0; z-index: 10;
+      background: rgba(255,255,255,0.9);
+      backdrop-filter: saturate(180%) blur(6px);
+      border-bottom: 1px solid var(--line);
+      padding: 8px 0;
+      margin: 0 -16px 12px -16px; padding-left: 16px; padding-right: 16px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; }
+    .row { display: flex; gap: 16px; align-items: stretch; }
+    .col { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); }
+    label { display:block; margin-top:8px; color: var(--muted); font-size: 13px; }
+    select, input[type="date"], input[type="number"] { width: 100%; max-width: 280px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
+    button { display:inline-block; margin-top:8px; padding: 8px 12px; border: 1px solid var(--line); background: #fff; color: var(--text); border-radius: 8px; cursor: pointer; transition: all .15s ease; }
+    button:hover { background: #f1f5f9; }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.primary:hover { filter: brightness(0.95); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    h3 { margin: 4px 0 8px 0; padding-bottom: 6px; border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 600; font-size: 14px; }
+    pre { background:#f1f5f9; padding:8px; border-radius: 8px; border: 1px solid var(--line); }
+    #events { max-height: 260px; overflow: auto; }
+    #portfolio { max-height: 220px; overflow: auto; }
+    #orderResult { max-height: 160px; overflow: auto; }
+    #coverage { font:12px monospace; color:#64748b; }
+    #livePrice { color: var(--text); }
+    canvas { background: #fff; border: 1px solid var(--line); border-radius: 8px; }
+    /* Recommendation list styling */
+    #recs > div { border-bottom: 1px dashed var(--line); padding: 6px 2px; display: flex; align-items: flex-start; gap: 8px; }
+    #recs > div:last-child { border-bottom: 0; }
+    #recs label { margin: 0; color: var(--text); font-size: 14px; }
+    .rec-ticker { font-weight: 600; color: var(--accent); }
+    .rec-action { font-weight: 600; color: var(--accent-2); margin-left: 4px; }
+    .rec-action.sell { color: #ef4444; }
+    .rec-thesis { display:block; color: var(--muted); font-size: 12px; margin-top: 2px; }
   </style>
 </head>
 <body>
   <h1>SPLLM Mock UI</h1>
+  <div class="statusbar">
+    <span class="dot" id="statusDot"></span>
+    <div id="status">Ready</div>
+  </div>
   <div class="row">
     <div class="col">
       <h3>Universe</h3>
@@ -29,7 +82,7 @@
       <label>Start <input type="date" id="start" /></label>
       <label>End <input type="date" id="end" /></label>
       <button id="load">Load</button>
-      <button id="decide">Decide (LLM)</button>
+      <button id="decide" class="primary">Decide (LLM)</button>
       <canvas id="chart" height="140"></canvas>
       <div id="coverage" style="margin-top:8px;font:12px monospace;color:#555"></div>
     </div>
@@ -47,18 +100,19 @@
         <select id="side"><option>BUY</option><option>SELL</option></select>
       </label>
       <label>Quantity <input id="qty" type="number" step="0.01" value="1"/></label>
-      <button id="submit">Submit</button>
+      <button id="submit" class="primary">Submit</button>
       <pre id="orderResult"></pre>
     </div>
   </div>
   <div class="row">
-    <div class="col"><h3>Events</h3><pre id="events"></pre></div>
-    <div class="col">
-      <h3>Status</h3><pre id="status">Ready</pre>
+    <div class="col" style="flex: 1 1 100%">
       <h3>Recommendations</h3>
       <div id="recs"></div>
-      <button id="execSelected" disabled>Execute Selected</button>
+      <button id="execSelected" class="primary" disabled>Execute Selected</button>
     </div>
+  </div>
+  <div class="row">
+    <div class="col" style="flex: 1 1 100%"><h3>Events</h3><pre id="events"></pre></div>
   </div>
 
   <script>
@@ -243,7 +297,13 @@
         cb.type = 'checkbox'; cb.id = `rec_${idx}`; cb.dataset.idx = String(idx);
         const label = document.createElement('label');
         label.htmlFor = cb.id;
-        label.textContent = `${p.ticker} ${p.action} qty=${p.quantity}` + (p.thesis? ` — ${p.thesis}` : '');
+        const tSpan = document.createElement('span'); tSpan.className = 'rec-ticker'; tSpan.textContent = p.ticker;
+        const aSpan = document.createElement('span'); aSpan.className = 'rec-action' + (String(p.action||'').toUpperCase()==='SELL'?' sell':''); aSpan.textContent = ` ${p.action}`;
+        const qSpan = document.createElement('span'); qSpan.style.marginLeft = '6px'; qSpan.textContent = `qty=${p.quantity}`;
+        label.appendChild(tSpan);
+        label.appendChild(aSpan);
+        label.appendChild(qSpan);
+        if (p.thesis){ const th = document.createElement('span'); th.className='rec-thesis'; th.textContent = p.thesis; label.appendChild(th); }
         row.appendChild(cb);
         row.appendChild(label);
         list.appendChild(row);
