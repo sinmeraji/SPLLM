@@ -222,6 +222,8 @@
       const simple = await api('/portfolio');
       document.getElementById('portfolio').textContent = JSON.stringify(simple, null, 2);
       try {
+        // First, refresh provider prices for held tickers and upsert into DB
+        try { await fetch('/portfolio/refresh-prices', { method:'POST' }); } catch {}
         const s = await api('/portfolio/summary');
         const el = document.getElementById('portfolioSummary');
         const rows = s.positions.map(p=> `${p.ticker}: qty=${p.quantity} avg=${p.avg_cost} price=${p.price ?? '-'} value=${p.value} pnl=${p.pnl} (${p.pnl_pct}%) weight=${p.weight_pct}%`);

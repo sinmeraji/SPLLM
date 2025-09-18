@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import logging
 
 from fastapi import APIRouter, Depends
@@ -10,6 +11,7 @@ from ..core.config import settings
 from ..core.db import get_db, engine
 from ..models.base import Base
 from ..models.portfolio import Position, KV
+from ..models.prices import PriceBar
 from ..schemas.portfolio import PortfolioOut, PositionOut, PortfolioSummaryOut, PositionDetailOut
 from ..services.sim import ensure_initialized, get_cash, apply_order
 from ..services.rules import evaluate_order
@@ -17,6 +19,7 @@ from ..providers.prices import get_latest_trade_price_alpaca
 from .decide import decide_and_execute as decide_fn
 import asyncio
 from ..utils.events import bus
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 
 router = APIRouter()
@@ -86,6 +89,45 @@ def get_portfolio_summary(db: Session = Depends(get_db)):
         positions_count=len(details),
         positions=details,
     )
+
+
+@router.post("/portfolio/refresh-prices")
+def refresh_portfolio_prices(db: Session = Depends(get_db)) -> dict:
+    """Fetch latest provider prices for tickers in current positions and upsert a 1-minute bar into DB.
+    - Rounds timestamp to the current minute (ET) and uses OHLC=price, volume=0.
+    - Idempotent via upsert on (ticker, ts, timeframe).
+    """
+    ensure_initialized(db, settings.initial_cash_usd)
+    positions = db.query(Position).all()
+    if not positions:
+        return {"updated": [], "count": 0}
+    now_et = datetime.now(ZoneInfo("America/New_York")).replace(second=0, microsecond=0)
+    ts = now_et.replace(tzinfo=None)
+    updated: list[str] = []
+    for p in positions:
+        latest = get_latest_trade_price_alpaca(p.ticker)
+        if latest is None:
+            continue
+        price = float(latest)
+        stmt = sqlite_insert(PriceBar).values(
+            ticker=p.ticker.upper(), ts=ts, timeframe='min',
+            open=price, high=price, low=price, close=price, volume=0.0,
+        )
+        upsert = stmt.on_conflict_do_update(
+            index_elements=['ticker', 'ts', 'timeframe'],
+            set_={
+                'open': stmt.excluded.open,
+                'high': stmt.excluded.high,
+                'low': stmt.excluded.low,
+                'close': stmt.excluded.close,
+                'volume': stmt.excluded.volume,
+            },
+        )
+        db.execute(upsert)
+        updated.append(p.ticker.upper())
+    if updated:
+        db.commit()
+    return {"updated": updated, "count": len(updated), "ts": ts.isoformat()}
 
 
 @router.post("/orders/market")
