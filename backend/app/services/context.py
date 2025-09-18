@@ -5,8 +5,9 @@ Service: decision context assembly.
 """
 from __future__ import annotations
 
-from datetime import date, time, datetime
+from datetime import date, time, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+import os
 
 from sqlalchemy.orm import Session
 
@@ -44,8 +45,16 @@ def build_news_context_file(d: date, window_end: time, tickers: List[str]) -> Di
     return {"news": limited, "counts": {t: len(arr) for t, arr in per_ticker.items()}}
 
 
-def build_news_context_db(db: Session, d: date, window_end: time, tickers: List[str], per_ticker_limit: int = 5) -> Dict[str, Any]:
-    start_dt = datetime.combine(d, time(0, 0))
+def build_news_context_db(
+    db: Session,
+    d: date,
+    window_end: time,
+    tickers: List[str],
+    per_ticker_limit: int = 5,
+    days_back: int = 1,
+) -> Dict[str, Any]:
+    # Pull headlines over [d - (days_back-1), d] up to window_end
+    start_dt = datetime.combine(d - timedelta(days=max(0, days_back - 1)), time(0, 0))
     end_dt = datetime.combine(d, window_end)
     out: Dict[str, List[Dict[str, Any]]] = {}
     for t in tickers:
@@ -268,10 +277,56 @@ def build_decision_context(db: Session, d: date, window_end: time, tickers: List
     allowed_windows = ["1d", "3d"] if intraday else ["1d", "3d", "7d"]
     prices = _build_price_features(db, d, tickers_u)
     news_metrics = _build_news_metrics(db, d, tickers_u, allowed_windows=allowed_windows)
-    news_briefs = build_news_context_db(db, d, window_end, tickers_u)
+    # News window controls
+    try:
+        days_back_env = int(os.getenv("NEWS_DAYS_BACK", "3") or 3)
+    except Exception:
+        days_back_env = 3
+    days_back_env = max(3, min(7, days_back_env))
+    try:
+        max_headlines = int(os.getenv("NEWS_MAX_HEADLINES", "10") or 10)
+    except Exception:
+        max_headlines = 10
+    news_briefs = build_news_context_db(
+        db, d, window_end, tickers_u, per_ticker_limit=max_headlines, days_back=days_back_env
+    )
     if not news_briefs["news"]:
         # fallback to file cache if DB empty
         news_briefs = build_news_context_file(d, window_end, tickers_u)
+    # Feature/metric explanations (compact)
+    feature_docs: Dict[str, Any] = {
+        "prices": {
+            "last_close": "Most recent intraday close today.",
+            "change_pct_1d": "Today close vs prior daily close (%).",
+            "r1d": "1-day return vs prior close.",
+            "r5d": "5-day return vs close 5 trading days ago.",
+            "r20d": "20-day return vs close 20 trading days ago.",
+            "mom_60d": "60-day momentum (price vs 60d-ago close).",
+            "vol_20d": "Std dev of daily returns over last 20 days.",
+            "rsi_14": "Relative Strength Index over 14 periods (0–100).",
+            "macd": "MACD line (EMA12 − EMA26) daily.",
+            "v_zscore_20d": "Z-score of today volume vs 20-day average.",
+            "sma20/sma50/sma200": "Simple moving averages of daily closes.",
+            "ema20/ema50": "Exponential moving averages (daily).",
+            "bb_upper20/bb_lower20": "Bollinger Bands at ±2σ around 20d SMA.",
+            "macd_signal/macd_hist": "MACD 9d signal and histogram (daily).",
+            "stoch_k/stoch_d": "Stochastic oscillator (%K/%D).",
+            "obv": "On-Balance Volume cumulative indicator.",
+            "intraday.rsi_14": "Intraday RSI-14 on 5-minute buckets (latest).",
+            "intraday.ema20/ema50": "Intraday EMAs on 5-minute closes (latest).",
+            "intraday.macd/_signal/_hist": "Intraday MACD metrics (latest).",
+            "daily_history.closes/volumes": "Last 20 daily closes and volumes.",
+            "intraday_history_5m.closes": "Last 12 five-minute closes today.",
+        },
+        "news_metrics": {
+            "count": "Number of news items in window.",
+            "sentiment_avg": "Average VADER compound sentiment (−1..1).",
+            "novelty": "Inverse frequency (1/count): higher implies rarer news.",
+            "reliability": "Source trust score plus small corroboration bonus.",
+            "window": "Aggregation horizon: 1d/3d/7d/30d/90d.",
+            "type": "News category (e.g., filings/breaking/other).",
+        },
+    }
     policy = {
         "limits": {"max_positions": 15, "max_weight_pct": 10, "min_cash_pct": 5},
         "costs": {"commission_usd": 10, "slippage_bps": 2},
@@ -295,6 +350,7 @@ def build_decision_context(db: Session, d: date, window_end: time, tickers: List
         "prices": prices,
         "news_metrics": news_metrics,
         "news": news_briefs,
+        "docs": feature_docs,
     }
     if market:
         ctx["market"] = market
