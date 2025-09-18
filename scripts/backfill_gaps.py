@@ -1,16 +1,20 @@
 #!/usr/bin/env python
 """
-Script: Backfill missing daily/minute price gaps only.
+Script: Backfill missing or sparse daily/minute price gaps only.
 Purpose:
-- Detects missing business days per ticker for:
+- Detects business days per ticker for:
   * Daily bars over ~2 years (up to yesterday)
   * Minute bars over last 60 days (up to today)
-- Ingests ONLY the missing days using Alpaca provider and respects ALPACA_FEED.
+- Ingests missing days and RE-INGESTS SPARSE minute days using a threshold.
+  Threshold defaults to:
+    - MINUTE_MIN_ROWS env (1-minute bars), else
+    - VERIFY_MINUTE_DENSITY*5 if set (assuming VERIFY is 5-min), else 300.
 
 Env (optional):
 - DATE: ISO date (YYYY-MM-DD). Defaults to today (ET)
 - TICKERS: override list (comma-separated). Defaults to universe file
 - SLEEP_MS: throttle between provider calls (default 200)
+- MINUTE_MIN_ROWS: minimum expected 1-minute bars per trading day (default 300)
 - DRY_RUN: 1 to only report gaps without ingesting
 
 Exit code:
@@ -23,7 +27,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 import os
 import time
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Tuple
 
 from dotenv import load_dotenv
 
@@ -77,6 +81,18 @@ def main() -> None:
     end_d = date.fromisoformat(end) if end else datetime.now(tz=ET).date()
     sleep_ms = int(os.getenv("SLEEP_MS", "200") or 0)
     dry_run = os.getenv("DRY_RUN", "0") == "1"
+    # Determine minute threshold in 1-minute bars
+    try:
+        minute_min_rows = int(os.getenv("MINUTE_MIN_ROWS", "0") or 0)
+    except Exception:
+        minute_min_rows = 0
+    if minute_min_rows <= 0:
+        try:
+            verify_5m = int(os.getenv("VERIFY_MINUTE_DENSITY", "0") or 0)
+        except Exception:
+            verify_5m = 0
+        # Approximate: 5-minute threshold * 5 => 1-minute rows
+        minute_min_rows = verify_5m * 5 if verify_5m > 0 else 300
 
     daily_start = date(end_d.year - 2, end_d.month, end_d.day)
     minute_start = end_d - timedelta(days=60)
@@ -87,6 +103,7 @@ def main() -> None:
 
     missing_daily_by_ticker: Dict[str, Set[date]] = {}
     missing_minute_days_by_ticker: Dict[str, Set[date]] = {}
+    sparse_minute_days_by_ticker: Dict[str, List[Tuple[date,int]]] = {}
 
     with SessionLocal() as db:
         # Detect gaps
@@ -105,6 +122,7 @@ def main() -> None:
                 missing_daily_by_ticker[t] = miss_daily
 
             miss_min_days: Set[date] = set()
+            sparse_min_days: List[Tuple[date,int]] = []
             for d in exp_minute:
                 start_dt = datetime.combine(d, datetime.min.time())
                 end_dt = datetime.combine(d, datetime.max.time())
@@ -113,13 +131,16 @@ def main() -> None:
                     .filter(PriceBar.ticker == t)
                     .filter(PriceBar.timeframe == 'min')
                     .filter(PriceBar.ts >= start_dt, PriceBar.ts <= end_dt)
-                    .limit(1)
                     .count()
                 )
                 if cnt == 0:
                     miss_min_days.add(d)
+                elif cnt < minute_min_rows:
+                    sparse_min_days.append((d, cnt))
             if miss_min_days:
                 missing_minute_days_by_ticker[t] = miss_min_days
+            if sparse_min_days:
+                sparse_minute_days_by_ticker[t] = sparse_min_days
 
         # Report
         print("Backfill gaps summary:")
@@ -127,8 +148,10 @@ def main() -> None:
         print(f"  Minute window: {minute_start}..{end_d} (business_days={len(exp_minute)})")
         total_daily_gaps = sum(len(v) for v in missing_daily_by_ticker.values())
         total_minute_gaps = sum(len(v) for v in missing_minute_days_by_ticker.values())
+        total_minute_sparse = sum(len(v) for v in sparse_minute_days_by_ticker.values())
         print(f"  Missing daily gaps:  {total_daily_gaps}")
         print(f"  Missing minute gaps: {total_minute_gaps}")
+        print(f"  Sparse minute days (<{minute_min_rows} 1-min bars): {total_minute_sparse}")
 
         if dry_run:
             print("DRY_RUN=1 -> not ingesting. Exiting.")
@@ -148,9 +171,15 @@ def main() -> None:
                 if sleep_ms:
                     time.sleep(sleep_ms / 1000.0)
 
-        # Minute gaps (at least one bar per day)
-        for t, days in missing_minute_days_by_ticker.items():
-            for d in sorted(days):
+        # Minute gaps (no bars) and sparse days (below threshold) -> re-ingest
+        # Combine to a unique set of days per ticker
+        for t in tickers:
+            need_days: Set[date] = set()
+            if t in missing_minute_days_by_ticker:
+                need_days.update(missing_minute_days_by_ticker[t])
+            if t in sparse_minute_days_by_ticker:
+                need_days.update(d for d,_ in sparse_minute_days_by_ticker[t])
+            for d in sorted(need_days):
                 try:
                     n = ingest_provider_bars(db, provider='alpaca', ticker=t, d=d, timeframe='minute', skip_if_exists=False)
                     print(f"minute {t} {d} +{n}")
