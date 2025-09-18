@@ -143,6 +143,18 @@ async def decide_with_llm(payload: Dict[str, Any], db: Session = Depends(get_db)
 
     # Build full decision context (includes price features, news metrics, and raw headlines)
     ctx = build_decision_context(db, day, time(16, 0), tickers)
+    # Log the full context JSON sent to LLM for audit/debugging
+    try:
+        write_jsonl(Path('logs/llm_requests.jsonl').resolve(), {
+            "ts": ts.isoformat(),
+            "route": "/decide/llm",
+            "as_of": day.isoformat(),
+            "tickers_count": len(tickers),
+            "tickers": tickers[:20],
+            "context": ctx,
+        })
+    except Exception:
+        pass
     # Call LLM to get proposals
     props: List[Proposal] = propose_trades(ctx)
     # Fallback: if LLM returns no proposals, use a mock recommendation for now
