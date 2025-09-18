@@ -90,12 +90,21 @@ def get_portfolio_summary(db: Session = Depends(get_db)):
 
 @router.post("/portfolio/refresh-prices")
 def refresh_portfolio_prices(db: Session = Depends(get_db)) -> dict:
-    """No-op persisting; kept for UI flow compatibility. Latest prices are fetched live in /portfolio/summary.
+    """Update positions.avg_cost to latest provider price for held tickers.
+    Note: This treats avg_cost as a rolling mark-to-market basis per user request.
     """
     ensure_initialized(db, settings.initial_cash_usd)
-    tickers = [p.ticker for p in db.query(Position).all()]
-    # Optionally could snapshot here in the future
-    return {"updated": tickers, "count": len(tickers)}
+    positions = db.query(Position).all()
+    updated: list[str] = []
+    for p in positions:
+        latest = get_latest_trade_price_alpaca(p.ticker)
+        if latest is None:
+            continue
+        p.avg_cost = float(latest)
+        updated.append(p.ticker)
+    if updated:
+        db.commit()
+    return {"updated": updated, "count": len(updated)}
 
 
 
