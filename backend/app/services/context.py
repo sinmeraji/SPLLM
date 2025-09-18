@@ -6,7 +6,7 @@ Service: decision context assembly.
 from __future__ import annotations
 
 from datetime import date, time, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -158,6 +158,55 @@ def _build_price_features(db: Session, d: date, tickers: List[str]) -> Dict[str,
         except Exception:
             pass
 
+        # Compact historical sequences for LLM (token-bounded)
+        daily_hist: Dict[str, List[float]] = {}
+        intraday_hist_5m: Dict[str, List[float]] = {}
+        try:
+            # Daily: last N closes and volumes up to date d (inclusive if present)
+            N_DAYS = 20
+            start_hist = datetime.combine(d, time(23, 59))
+            drows: List[PriceBar] = (
+                db.query(PriceBar)
+                .filter(PriceBar.ticker == t, PriceBar.timeframe == 'day')
+                .filter(PriceBar.ts <= start_hist)
+                .order_by(PriceBar.ts.desc())
+                .limit(N_DAYS)
+                .all()
+            )
+            if drows:
+                closes = [float(r.close) for r in reversed(drows)]
+                vols = [float(r.volume or 0.0) for r in reversed(drows)]
+                daily_hist = {"closes": closes, "volumes": vols}
+        except Exception:
+            pass
+        try:
+            # Intraday today: bucket minute bars into 5m, take last K closes
+            K_POINTS = 12
+            start_day = datetime.combine(d, time(0, 0))
+            end_day = datetime.combine(d, time(23, 59))
+            mrows: List[PriceBar] = (
+                db.query(PriceBar)
+                .filter(PriceBar.ticker == t, PriceBar.timeframe == 'min')
+                .filter(PriceBar.ts >= start_day, PriceBar.ts <= end_day)
+                .order_by(PriceBar.ts.asc())
+                .all()
+            )
+            if mrows:
+                bucket_to_close: Dict[int, float] = {}
+                five = 5 * 60
+                for r in mrows:
+                    try:
+                        epoch = int(r.ts.timestamp())
+                    except Exception:
+                        continue
+                    bucket = (epoch // five) * five
+                    bucket_to_close[bucket] = float(r.close)
+                keys = sorted(bucket_to_close.keys())
+                series = [bucket_to_close[k] for k in keys][-K_POINTS:]
+                intraday_hist_5m = {"closes": series}
+        except Exception:
+            pass
+
         out[t] = {
             "last_close": last_close,
             "change_pct_1d": change_pct_1d,
@@ -179,6 +228,8 @@ def _build_price_features(db: Session, d: date, tickers: List[str]) -> Dict[str,
             "macd_signal": getattr(ext, "macd_signal", None) if ext else None,
             "macd_hist": getattr(ext, "macd_hist", None) if ext else None,
             "intraday": intraday,
+            "daily_history": daily_hist,
+            "intraday_history_5m": intraday_hist_5m,
         }
     return out
 
