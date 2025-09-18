@@ -19,6 +19,7 @@ from ..models.prices import (
     PriceIndicatorIntraday,
     PriceBar,
 )
+from ..models.analyst import AnalystMetric, AnalystEvent
 from ..models.portfolio import Position
 from ..services.sim import get_cash
 from ..core.config import settings
@@ -35,7 +36,6 @@ def build_news_context_file(d: date, window_end: time, tickers: List[str]) -> Di
         per_ticker.setdefault(it.ticker, []).append({
             "ts": it.ts.isoformat(),
             "title": it.title,
-            "url": it.url,
             "source": it.source,
             "sentiment": it.sentiment,
         })
@@ -71,7 +71,6 @@ def build_news_context_db(
                 {
                     "ts": r.ts.isoformat(),
                     "title": r.title,
-                    "url": r.url,
                     "source": r.source,
                     "sentiment": r.sentiment,
                     "type": r.type,
@@ -277,6 +276,47 @@ def build_decision_context(db: Session, d: date, window_end: time, tickers: List
     allowed_windows = ["1d", "3d"] if intraday else ["1d", "3d", "7d"]
     prices = _build_price_features(db, d, tickers_u)
     news_metrics = _build_news_metrics(db, d, tickers_u, allowed_windows=allowed_windows)
+    # Analyst metrics (1d/7d/30d)
+    a_rows = (
+        db.query(AnalystMetric)
+        .filter(AnalystMetric.date == d)
+        .filter(AnalystMetric.ticker.in_(tickers_u))
+        .all()
+    )
+    analyst_metrics = [
+        {
+            "ticker": r.ticker,
+            "window": r.window,
+            "up_count": r.up_count,
+            "down_count": r.down_count,
+            "pt_delta_avg_pct": r.pt_delta_avg_pct,
+            "est_delta_avg_pct": r.est_delta_avg_pct,
+        }
+        for r in a_rows
+    ]
+    # Analyst briefs: last 3 items per ticker
+    briefs: Dict[str, List[Dict[str, Any]]] = {}
+    for t in tickers_u:
+        rows = (
+            db.query(AnalystEvent)
+            .filter(AnalystEvent.ticker == t)
+            .order_by(AnalystEvent.ts.desc())
+            .limit(3)
+            .all()
+        )
+        if rows:
+            briefs[t] = [
+                {
+                    "ts": r.ts.isoformat(),
+                    "type": r.type,
+                    "firm": r.firm,
+                    "from": r.from_rating,
+                    "to": r.to_rating,
+                    "old_pt": r.old_pt,
+                    "new_pt": r.new_pt,
+                }
+                for r in rows
+            ][::-1]
     # News window controls
     try:
         days_back_env = int(os.getenv("NEWS_DAYS_BACK", "3") or 3)
@@ -350,6 +390,8 @@ def build_decision_context(db: Session, d: date, window_end: time, tickers: List
         "prices": prices,
         "news_metrics": news_metrics,
         "news": news_briefs,
+        "analyst_metrics": analyst_metrics,
+        "analyst_briefs": briefs,
         "docs": feature_docs,
     }
     if market:

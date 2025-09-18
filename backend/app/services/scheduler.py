@@ -22,6 +22,7 @@ from ..core.db import SessionLocal
 from ..services.prices_ingest import ingest_provider_bars, ingest_provider_bars_multi, enforce_retention
 from ..providers.news import GdeltProvider, EdgarProvider, EdgarSubmissionsProvider
 from ..services.news_db import upsert_news_items_to_db, compute_metrics_for_date
+from ..services.analyst import upsert_events_for_ticker as analyst_upsert, compute_metrics_for_date as analyst_metrics_for_date
 from ..services.features import (
     recompute_intraday_indicators_last_30d_5m,
     recompute_indicators_for_date,
@@ -243,6 +244,22 @@ def start_scheduler() -> None:
     # News updates: interval minutes from env (default 60)
     news_minutes = int(os.getenv("NEWS_UPDATE_MINUTES", "60"))
     _scheduler.add_job(news_job, IntervalTrigger(minutes=news_minutes))
+    # Analyst updates: hourly by default
+    analyst_minutes = int(os.getenv("ANALYST_UPDATE_MINUTES", "60"))
+    async def analyst_job():
+        d_et = datetime.now(tz=ET).date()
+        tickers = _load_tickers()
+        with SessionLocal() as db:
+            for t in tickers:
+                try:
+                    analyst_upsert(db, t, limit=int(os.getenv("ANALYST_MAX_ITEMS", "50")))
+                except Exception:
+                    continue
+            try:
+                analyst_metrics_for_date(db, d_et, tickers)
+            except Exception:
+                pass
+    _scheduler.add_job(analyst_job, IntervalTrigger(minutes=analyst_minutes))
     # EOD at 16:10 ET on weekdays
     _scheduler.add_job(eod_job, CronTrigger(hour=16, minute=10, day_of_week="mon-fri", timezone=ET))
     # LLM decisions: interval minutes from env (0 disables) and EOD run (16:15 ET)
@@ -251,6 +268,19 @@ def start_scheduler() -> None:
         _scheduler.add_job(llm_job, IntervalTrigger(minutes=llm_minutes))
     if os.getenv("LLM_EOD", "1") == "1":
         _scheduler.add_job(llm_job, CronTrigger(hour=16, minute=15, day_of_week="mon-fri", timezone=ET))
+    # One-time refresh of positions avg_cost at scheduler start (runs immediately)
+    try:
+        from ..core.db import SessionLocal as _SL
+        from ..models.portfolio import Position as _Pos
+        from ..providers.prices import get_latest_trade_price_alpaca as _lp
+        with _SL() as _db:
+            for _p in _db.query(_Pos).all():
+                _pr = _lp(_p.ticker)
+                if _pr is not None:
+                    _p.avg_cost = float(_pr)
+            _db.commit()
+    except Exception:
+        pass
     _scheduler.start()
 
 
