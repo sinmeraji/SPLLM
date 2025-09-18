@@ -53,6 +53,7 @@ from backend.app.services.features import (
 )
 from backend.app.providers.news import GdeltProvider, EdgarProvider, EdgarSubmissionsProvider
 from backend.app.services.news_db import upsert_news_items_to_db, compute_metrics_for_date
+from backend.app.services.analyst import upsert_events_for_ticker as analyst_upsert, compute_metrics_for_date as analyst_metrics_for_date
 
 
 ET = ZoneInfo("America/New_York")
@@ -135,6 +136,18 @@ def main() -> None:
     )
 
     with SessionLocal() as db:
+        # Prepass: refresh analyst events once for all tickers (so per-day metrics see recent events)
+        try:
+            total_ev = 0
+            for t in tickers:
+                try:
+                    n = analyst_upsert(db, t, limit=int(os.getenv("ANALYST_MAX_ITEMS", "50")))
+                    total_ev += int(n)
+                except Exception:
+                    continue
+            log.info("analyst events upserted total=%s", total_ev)
+        except Exception as e:
+            log.warning("analyst events upsert failed err=%s", e)
         # Process each business day in window
         for d_et in days:
             log.info("day begin %s", d_et.isoformat())
@@ -189,6 +202,13 @@ def main() -> None:
                 log.info("news metrics computed date=%s", d_et.isoformat())
             except Exception as e:
                 log.warning("news metrics compute failed date=%s err=%s", d_et.isoformat(), e)
+
+            # 4b) Analyst metrics for the day
+            try:
+                analyst_metrics_for_date(db, d_et, tickers)
+                log.info("analyst metrics computed date=%s", d_et.isoformat())
+            except Exception as e:
+                log.warning("analyst metrics compute failed date=%s err=%s", d_et.isoformat(), e)
 
             log.info("day done %s", d_et.isoformat())
 
