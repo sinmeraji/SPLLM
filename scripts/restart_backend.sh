@@ -11,8 +11,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # Purge log files (keep directory structure)
 ROOT="$(cd "$DIR/.." && pwd)"
 mkdir -p "$ROOT/logs"
-find "$ROOT/logs" -type f \( -name '*.log' -o -name '*.jsonl' \) -delete || true
+find "$ROOT/logs" -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.json' \) -delete || true
 rm -f "$ROOT/backend_server.log" "$ROOT/logs/backend_server.log" "$ROOT/logs/backend_app.log" || true
+rm -f "$ROOT/logs/llm_requests.jsonl" "$ROOT/logs/decide_llm_response.json" || true
 
 # Recreate primary app log so tail -f works immediately after restart
 touch "$ROOT/logs/backend_app.log"
