@@ -23,7 +23,7 @@ from ..services.prices_ingest import ingest_provider_bars, ingest_provider_bars_
 from ..providers.news import GdeltProvider, EdgarProvider, EdgarSubmissionsProvider
 from ..services.news_db import upsert_news_items_to_db, compute_metrics_for_date
 from ..services.features import (
-    recompute_intraday_indicators_last_90d,
+    recompute_intraday_indicators_last_30d_5m,
     recompute_indicators_for_date,
 )
 from ..utils.events import bus
@@ -63,10 +63,10 @@ async def minute_job() -> None:
             ingest_provider_bars_multi(db, provider="alpaca", tickers=tickers, d=d_et, timeframe="minute", skip_if_exists=False)
         except Exception:
             pass
-        # Recompute intraday indicators per ticker
+        # Recompute intraday indicators per ticker (5m/30d)
         for t in tickers:
             try:
-                recompute_intraday_indicators_last_90d(db, ticker=t, as_of=d_et)
+                recompute_intraday_indicators_last_30d_5m(db, ticker=t, as_of=d_et)
             except Exception:
                 continue
     try:
